@@ -1,8 +1,0 @@
-[env]
-CARGO_WORKSPACE_DIR = { value = "", relative = true }
-
-[target.aarch64-linux-android]
-runner = "./apps/android/run-on-android.sh"
-
-[target.armv7-linux-androideabi]
-runner = "./apps/android/run-on-android.sh"
