@@ -8,12 +8,14 @@ pub use client::start_client;
 pub use connector::socket_connector;
 pub use context::RpcContextImpl;
 
-use jwst::{debug, error, info, trace, warn};
+use jwst::{Block, debug, error, info, trace, warn};
 use std::{collections::hash_map::Entry, sync::Arc, time::Instant};
 use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::{sleep, Duration},
 };
+use yrs::Map;
+use jwst_storage::JwstStorage;
 
 pub enum Message {
     Binary(Vec<u8>),
@@ -64,6 +66,7 @@ pub async fn handle_connector(
                 let ts = Instant::now();
                 trace!("recv from server update: {:?}", msg);
                 if tx.send(Message::Binary(msg.clone())).await.is_err() {
+                    println!("send(Message::Binary(msg.clone()))");
                     // pipeline was closed
                     break 'sync;
                 }
@@ -82,6 +85,7 @@ pub async fn handle_connector(
                             data.len()
                         );
                         if tx.send(Message::Binary(data.clone())).await.is_err() {
+                            println!("AAAAA");
                             // pipeline was closed
                             break 'sync;
                         }
@@ -96,6 +100,7 @@ pub async fn handle_connector(
                         let ts = Instant::now();
                         trace!("recv content update from broadcast: {:?}bytes", data.len());
                         if tx.send(Message::Binary(data.clone())).await.is_err() {
+                            println!("BBBBB");
                             // pipeline was closed
                             break 'sync;
                         }
@@ -109,6 +114,7 @@ pub async fn handle_connector(
                     BroadcastType::CloseUser(user) if user == identifier => {
                         let ts = Instant::now();
                         if tx.send(Message::Close).await.is_err() {
+                            println!("CCCCC");
                             // pipeline was closed
                             break 'sync;
                         }
@@ -116,11 +122,13 @@ pub async fn handle_connector(
                             debug!("process close user cost: {}ms", ts.elapsed().as_micros());
                         }
 
+                        println!("DDDDD");
                         break;
                     }
                     BroadcastType::CloseAll => {
                         let ts = Instant::now();
                         if tx.send(Message::Close).await.is_err() {
+                            println!("EEEEE");
                             // pipeline was closed
                             break 'sync;
                         }
@@ -128,6 +136,7 @@ pub async fn handle_connector(
                             debug!("process close all cost: {}ms", ts.elapsed().as_micros());
                         }
 
+                        println!("FFFFF");
                         break 'sync;
                     }
                     _ => {}
@@ -143,12 +152,14 @@ pub async fn handle_connector(
                     .full_migrate(workspace_id.clone(), None, false)
                     .await;
                 if tx.is_closed() || tx.send(Message::Ping).await.is_err() {
+                    println!("GGGGG");
                     break 'sync;
                 }
             }
         }
     }
 
+    info!("exited");
     // make a final store
     context
         .get_storage()

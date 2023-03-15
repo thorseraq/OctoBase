@@ -62,6 +62,7 @@ async fn join_sync_thread(
 
     let id = workspace.id();
     let mut workspace = workspace.clone();
+    println!("workspace_id: {}", id);
     debug!("start sync thread {id}");
     let success = loop {
         tokio::select! {
@@ -122,12 +123,14 @@ async fn run_sync(
     remote: String,
     rx: &mut Receiver<Vec<u8>>,
 ) -> JwstResult<bool> {
+    println!("run_sync");
     let socket = init_connection(workspace, &remote).await?;
     join_sync_thread(first_sync, workspace, socket, rx).await
 }
 
 fn start_sync_thread(workspace: &Workspace, remote: String, mut rx: Receiver<Vec<u8>>) {
     debug!("spawn sync thread");
+    println!("start_sync_thread, remote: {remote}");
     let first_sync = Arc::new(AtomicBool::new(false));
     let first_sync_cloned = first_sync.clone();
     let workspace = workspace.clone();
@@ -151,16 +154,19 @@ fn start_sync_thread(workspace: &Workspace, remote: String, mut rx: Receiver<Vec
                 .await
                 {
                     Ok(true) => {
+                        println!("sync thread finished");
                         debug!("sync thread finished");
                         first_sync_cloned.store(true, Ordering::Release);
                         break;
                     }
                     Ok(false) => {
+                        println!("Remote sync connection disconnected, try again in 2 seconds");
                         first_sync_cloned.store(true, Ordering::Release);
                         warn!("Remote sync connection disconnected, try again in 2 seconds");
                         sleep(Duration::from_secs(3)).await;
                     }
                     Err(e) => {
+                        println!("Remote sync error, try again in 3 seconds");
                         first_sync_cloned.store(true, Ordering::Release);
                         warn!("Remote sync error, try again in 3 seconds: {}", e);
                         sleep(Duration::from_secs(1)).await;
@@ -187,13 +193,18 @@ pub async fn start_client(
     let workspace = storage.docs().get(id.clone()).await?;
 
     if !remote.is_empty() {
-        if let Entry::Vacant(entry) = storage.docs().remote().write().await.entry(id.clone()) {
-            let (tx, rx) = channel(100);
+        let rx = match storage.docs().remote().write().await.entry(id.clone()) {
+            Entry::Occupied(tx) => {
+                tx.get().subscribe()
+            },
+            Entry::Vacant(entry) => {
+                let (tx, rx) = channel(100);
+                entry.insert(tx);
+                rx
+            }
+        };
 
-            start_sync_thread(&workspace, remote, rx);
-
-            entry.insert(tx);
-        }
+        start_sync_thread(&workspace, remote, rx);
     }
 
     Ok(workspace)
