@@ -62,6 +62,7 @@ async fn join_sync_thread(
 
     let id = workspace.id();
     let mut workspace = workspace.clone();
+    // println!("join_sync_thread workspace_id: {}", id);
     debug!("start sync thread {id}");
     let success = loop {
         tokio::select! {
@@ -128,6 +129,7 @@ async fn run_sync(
 
 fn start_sync_thread(workspace: &Workspace, remote: String, mut rx: Receiver<Vec<u8>>) {
     debug!("spawn sync thread");
+    println!("start_sync_thread, remote: {remote}");
     let first_sync = Arc::new(AtomicBool::new(false));
     let first_sync_cloned = first_sync.clone();
     let workspace = workspace.clone();
@@ -141,6 +143,8 @@ fn start_sync_thread(workspace: &Workspace, remote: String, mut rx: Receiver<Vec
                 sleep(Duration::from_secs(2)).await;
                 first_sync_cloned_2.store(true, Ordering::Release);
             });
+            sleep(Duration::from_secs(6)).await;
+            println!("----------------start syncing from start_sync_thread()----------------");
             loop {
                 match run_sync(
                     first_sync_cloned.clone(),
@@ -151,16 +155,19 @@ fn start_sync_thread(workspace: &Workspace, remote: String, mut rx: Receiver<Vec
                 .await
                 {
                     Ok(true) => {
+                        println!("sync thread finished");
                         debug!("sync thread finished");
                         first_sync_cloned.store(true, Ordering::Release);
                         break;
                     }
                     Ok(false) => {
+                        println!("Remote sync connection disconnected, try again in 2 seconds");
                         first_sync_cloned.store(true, Ordering::Release);
                         warn!("Remote sync connection disconnected, try again in 2 seconds");
                         sleep(Duration::from_secs(3)).await;
                     }
                     Err(e) => {
+                        println!("Remote sync error, try again in 3 seconds");
                         first_sync_cloned.store(true, Ordering::Release);
                         warn!("Remote sync error, try again in 3 seconds: {}", e);
                         sleep(Duration::from_secs(1)).await;
@@ -187,13 +194,23 @@ pub async fn start_client(
     let workspace = storage.docs().get(id.clone()).await?;
 
     if !remote.is_empty() {
-        if let Entry::Vacant(entry) = storage.docs().remote().write().await.entry(id.clone()) {
-            let (tx, rx) = channel(100);
+        // 单纯拿到 storage 里 DocAutoStorage 对应的 receiver。但是 sender 在 doc::write_update() 方法里会用。
+        let rx = match storage.docs().remote().write().await.entry(id.clone()) {
+            Entry::Occupied(tx) => {
+                tx.get().subscribe()
+            },
+            Entry::Vacant(entry) => {
+                let (tx, rx) = channel(100);
+                entry.insert(tx);
+                rx
+            }
+        };
 
-            start_sync_thread(&workspace, remote, rx);
+        // 负责把本地 workspace 的修改通过 socket 发到 remote 远端。如果是使用 jwst storage 的 api，对本地
+        // workspace 的操作会自动触发 tx 的 send。但是在 rpc 里需要手动监听 workspace 的变化，然后手动 tx send 一下
 
-            entry.insert(tx);
-        }
+        // 负责把远端 remote 的修改同步到本地 workspace，并将 update 编码后发送回远端
+        start_sync_thread(&workspace, remote, rx);
     }
 
     Ok(workspace)

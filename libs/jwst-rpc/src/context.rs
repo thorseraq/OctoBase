@@ -32,6 +32,7 @@ pub trait RpcContextImpl<'a> {
     }
 
     async fn join_broadcast(&self, workspace: &mut Workspace) -> BroadcastReceiver<BroadcastType> {
+        info!("join_broadcast, {:?}", workspace.id());
         // broadcast channel
         let (broadcast_tx, broadcast_rx) =
             match self.get_channel().write().await.entry(workspace.id()) {
@@ -46,6 +47,8 @@ pub trait RpcContextImpl<'a> {
                 }
             };
 
+        // 这里是监听本地 workspace 的修改，然后把本地的 awareness 和 doc 的变化编码后的 update 都通过
+        // broadcast 发出去。返回这个 broadcast_rx 用来接收发出去的内容
         subscribe(workspace, broadcast_tx).await;
 
         broadcast_rx
@@ -67,6 +70,7 @@ pub trait RpcContextImpl<'a> {
             .expect("workspace not found");
         tokio::spawn(async move {
             while let Some(binary) = remote_rx.recv().await {
+                println!("apply_change: recv binary: {:?}", binary);
                 let ts = Instant::now();
                 let message = workspace.sync_decode_message(&binary).await;
                 if ts.elapsed().as_micros() > 50 {
