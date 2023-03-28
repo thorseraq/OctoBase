@@ -32,6 +32,7 @@ impl Storage {
     }
 
     pub fn connect(&mut self, workspace_id: String, remote: String) -> Option<Workspace> {
+        println!("test");
         match self.sync(workspace_id, remote) {
             Ok(workspace) => Some(workspace),
             Err(e) => {
