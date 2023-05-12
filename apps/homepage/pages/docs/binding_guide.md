@@ -16,7 +16,7 @@
 
 ### Run OctoBase demo app
 
-To run the OctoBase project, execute the following commands in the OctoBase\apps\android directory:
+To run the OctoBase project, execute the following commands in the OctoBase\apps\android directory: 
 
 ```sh
 cargo install cargo-ndk
