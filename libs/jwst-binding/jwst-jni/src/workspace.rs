@@ -2,11 +2,11 @@ use super::{
     generate_interface, Block, JwstWorkspace, OnWorkspaceTransaction, VecOfStrings,
     WorkspaceTransaction,
 };
-use yrs::UpdateSubscription;
+use crate::block_observer::{BlockObserver, BlockObserverWrapper};
+use std::sync::Arc;
 
 pub struct Workspace {
     pub(crate) workspace: JwstWorkspace,
-    pub(crate) _sub: Option<UpdateSubscription>,
 }
 
 impl Workspace {
@@ -45,11 +45,10 @@ impl Workspace {
     #[generate_interface]
     pub fn get_blocks_by_flavour(&self, flavour: &str) -> Vec<Block> {
         self.workspace.with_trx(|mut trx| {
-            trx.get_blocks().get_blocks_by_flavour(&trx.trx, flavour)
+            trx.get_blocks()
+                .get_blocks_by_flavour(&trx.trx, flavour)
                 .iter()
-                .map(|item| {
-                    Block(item.clone())
-                })
+                .map(|item| Block(item.clone()))
                 .collect()
         })
     }
@@ -71,6 +70,18 @@ impl Workspace {
 
     #[generate_interface]
     pub fn set_search_index(&self, fields: VecOfStrings) -> bool {
-        self.workspace.set_search_index(fields)
+        self.workspace
+            .set_search_index(fields)
+            .expect("failed to set search index")
+    }
+
+    #[generate_interface]
+    pub fn set_callback(&self, observer: Box<dyn BlockObserver>) -> bool {
+        let observer = BlockObserverWrapper::new(observer);
+        self.workspace
+            .set_callback(Arc::new(Box::new(move |_workspace_id, block_ids| {
+                observer.on_change(block_ids);
+            })));
+        true
     }
 }

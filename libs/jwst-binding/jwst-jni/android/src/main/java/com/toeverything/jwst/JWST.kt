@@ -75,6 +75,18 @@ class Workspace(workspace: JwstWorkspace) {
         }
         return this.workspace.setSearchIndex(indexFields)
     }
+
+    fun setCallback(callback: (block_ids: Array<String>) -> Unit): Boolean {
+        return this.workspace.setCallback {
+            block_ids -> run {
+                var x = mutableListOf<String>()
+                for (i in 0 until block_ids.len()) {
+                    x.add(block_ids.at(i))
+                }
+                callback(x.toTypedArray())
+            }
+        }
+    }
 }
 
 class WorkspaceTransaction constructor(internal var trx: JwstWorkspaceTransaction) {
@@ -85,8 +97,8 @@ class WorkspaceTransaction constructor(internal var trx: JwstWorkspaceTransactio
         }
     }
 
-    fun create(id: String, flavor: String): Block {
-        return Block(this.trx.create(id, flavor))
+    fun create(id: String, flavour: String): Block {
+        return Block(this.trx.create(id, flavour))
     }
 
     fun remove(block_id: String): Boolean {
@@ -140,8 +152,8 @@ class Block constructor(private var block: JwstBlock) {
         return this.block.id()
     }
 
-    fun flavor(trx: WorkspaceTransaction): String {
-        return this.block.flavor(trx.trx)
+    fun flavour(trx: WorkspaceTransaction): String {
+        return this.block.flavour(trx.trx)
     }
 
     fun created(trx: WorkspaceTransaction): Long {
@@ -185,14 +197,14 @@ class Block constructor(private var block: JwstBlock) {
     }
 }
 
-class Storage constructor(path: String, private val remote: String = "") {
+class Storage constructor(path: String, private val remote: String = "", private val logLevel: String = "debug") {
     companion object {
         init {
             System.loadLibrary("jwst")
         }
     }
 
-    private var storage = JwstStorage(path)
+    private var storage = JwstStorage(path, logLevel)
 
     val failed get() = this.storage.error().isPresent
 
@@ -200,5 +212,29 @@ class Storage constructor(path: String, private val remote: String = "") {
 
     fun getWorkspace(id: String): Optional<Workspace> {
         return  this.storage.connect(id, this.remote + "/" + id).map { Workspace(it) }
+    }
+
+    fun isOffline(): Boolean {
+        return this.storage.is_offline
+    }
+
+    fun isInitialized(): Boolean {
+        return this.storage.is_initialized
+    }
+
+    fun isSyncing(): Boolean {
+        return this.storage.is_syncing
+    }
+
+    fun isFinished(): Boolean {
+        return this.storage.is_finished
+    }
+
+    fun isError(): Boolean {
+        return this.storage.is_error
+    }
+
+    fun getSyncState(): String {
+        return this.storage._sync_state
     }
 }

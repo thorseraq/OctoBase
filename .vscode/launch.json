@@ -17,7 +17,8 @@
 			},
 			"env": {
 				"DATABASE_URL": "postgresql://affine:affine@localhost:5432/affine",
-				"SIGN_KEY": "12345678"
+				"SIGN_KEY": "12345678",
+				"AFFINE_CLOUD_LOG": "debug,mio=off,hyper=off,rustls=off,tantivy=off,sqlx::query=off,jwst_rpc=trace,jwst_rpc::context=info,affine_cloud=trace"
 			},
 			"args": [],
 			"cwd": "${workspaceFolder}"
@@ -45,76 +46,6 @@
 				"filter": {
 					"name": "keck",
 					"kind": "bin"
-				}
-			},
-			"args": [],
-			"cwd": "${workspaceFolder}"
-		},
-		{
-			"type": "lldb",
-			"request": "launch",
-			"name": "Debug unit tests in library 'lib0'",
-			"cargo": {
-				"args": ["test", "--no-run", "--lib", "--package=lib0"],
-				"filter": {
-					"name": "lib0",
-					"kind": "lib"
-				}
-			},
-			"args": [],
-			"cwd": "${workspaceFolder}"
-		},
-		{
-			"type": "lldb",
-			"request": "launch",
-			"name": "Debug integration test 'encoding_test'",
-			"cargo": {
-				"args": ["test", "--no-run", "--test=encoding_test", "--package=lib0"],
-				"filter": {
-					"name": "encoding_test",
-					"kind": "test"
-				}
-			},
-			"args": [],
-			"cwd": "${workspaceFolder}"
-		},
-		{
-			"type": "lldb",
-			"request": "launch",
-			"name": "Debug integration test 'json_test'",
-			"cargo": {
-				"args": ["test", "--no-run", "--test=json_test", "--package=lib0"],
-				"filter": {
-					"name": "json_test",
-					"kind": "test"
-				}
-			},
-			"args": [],
-			"cwd": "${workspaceFolder}"
-		},
-		{
-			"type": "lldb",
-			"request": "launch",
-			"name": "Debug benchmark 'lib0_benchmarks'",
-			"cargo": {
-				"args": ["test", "--no-run", "--bench=lib0_benchmarks", "--package=lib0"],
-				"filter": {
-					"name": "lib0_benchmarks",
-					"kind": "bench"
-				}
-			},
-			"args": [],
-			"cwd": "${workspaceFolder}"
-		},
-		{
-			"type": "lldb",
-			"request": "launch",
-			"name": "Debug unit tests in library 'yrs'",
-			"cargo": {
-				"args": ["test", "--no-run", "--lib", "--package=yrs"],
-				"filter": {
-					"name": "yrs",
-					"kind": "lib"
 				}
 			},
 			"args": [],

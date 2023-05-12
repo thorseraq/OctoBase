@@ -38,9 +38,7 @@ mod ffi {
 
         pub fn id(self: &Block) -> String;
 
-        pub fn flavor(self: &Block) -> String;
-
-        pub fn version(self: &Block) -> String;
+        pub fn flavour(self: &Block) -> String;
 
         pub fn created(self: &Block) -> u64;
 
@@ -102,7 +100,7 @@ mod ffi {
 
         fn get(self: &Workspace, block_id: String) -> Option<Block>;
 
-        fn create(self: &Workspace, block_id: String, flavor: String) -> Block;
+        fn create(self: &Workspace, block_id: String, flavour: String) -> Block;
 
         fn search(self: &Workspace, query: String) -> String;
 
@@ -123,7 +121,22 @@ mod ffi {
         #[swift_bridge(init)]
         fn new(path: String) -> Storage;
 
+        #[swift_bridge(init)]
+        fn new_with_log_level(path: String, level: String) -> Storage;
+
         fn error(self: &Storage) -> Option<String>;
+
+        fn is_offline(self: &Storage) -> bool;
+
+        fn is_initialized(self: &Storage) -> bool;
+
+        fn is_syncing(self: &Storage) -> bool;
+
+        fn is_finished(self: &Storage) -> bool;
+
+        fn is_error(self: &Storage) -> bool;
+
+        fn get_sync_state(self: &Storage) -> String;
 
         fn connect(self: &mut Storage, workspace_id: String, remote: String) -> Option<Workspace>;
 

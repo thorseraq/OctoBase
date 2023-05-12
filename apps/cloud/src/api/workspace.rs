@@ -1,4 +1,4 @@
-use crate::{context::Context, error_status::ErrorStatus};
+use crate::{context::Context, infrastructure::error_status::ErrorStatus};
 use axum::{
     extract::{BodyStream, Path},
     headers::ContentLength,
@@ -8,8 +8,9 @@ use axum::{
 };
 use cloud_database::{Claims, UpdateWorkspace, WorkspaceSearchInput};
 use futures::{future, StreamExt};
-use jwst::{error, BlobStorage, JwstError};
+use jwst::{error, BlobStorage};
 use jwst_logger::{info, instrument, tracing};
+use jwst_storage::JwstStorageError;
 use std::sync::Arc;
 
 impl Context {
@@ -346,16 +347,24 @@ pub async fn get_doc(
     get_workspace_doc(ctx, workspace_id).await
 }
 
-/// Get a exists `page` json by page id
-/// - Return `page` json.
+/// Get a exists `page` markdown/json/doc by page id
+/// - If Context-Type is `application/json` then return `page` json.
+/// - If Context-Type starts with `text/` then return `page` markdown.
+/// - If neither then return `page` single page doc.
 #[utoipa::path(
     get,
     tag = "Workspace",
-    context_path = "/api/workspace",
-    path = "/{workspace_id}/page/{page_id}",
+    context_path = "/api/public",
+    path = "/workspace/{workspace_id}/{page_id}",
     params(
         ("workspace_id", description = "workspace id"),
         ("page_id", description = "page id")
+    ),
+    responses(
+        (status = 200, description = "Successfully get public page.", body =Vec<u8>,),
+        (status = 403, description = "Not a public workspace or page."),
+        (status = 404, description = "Workspace not found."),
+        (status = 500, description = "Server internal error.")
     )
 )]
 #[instrument(skip(ctx, headers))]
@@ -366,37 +375,62 @@ pub async fn get_public_page(
 ) -> Response {
     info!("get_page enter");
     match ctx.db.is_public_workspace(workspace_id.clone()).await {
-        Ok(true) => (),
-        Ok(false) => return ErrorStatus::Forbidden.into_response(),
+        // check if page is public
+        // TODO: improve logic
+        Ok(false)
+            if ctx
+                .storage
+                .get_workspace(workspace_id.clone())
+                .await
+                .ok()
+                .and_then(|ws| {
+                    ws.try_with_trx(|mut t| t.get_space(page_id.clone()).shared(&t.trx))
+                })
+                != Some(true) =>
+        {
+            return ErrorStatus::Forbidden.into_response();
+        }
         Err(e) => {
             error!("Failed to get permission: {:?}", e);
             return ErrorStatus::InternalServerError.into_response();
         }
+        Ok(true | false) => (),
     }
 
     match ctx.storage.get_workspace(workspace_id).await {
         Ok(workspace) => {
-            if headers
-                .get(CONTENT_TYPE)
-                .and_then(|c| c.to_str().ok())
-                .map(|s| s.contains("json"))
-                .unwrap_or(false)
-            {
-                if let Some(space) = workspace.with_trx(|t| t.get_exists_space(page_id)) {
-                    Json(space).into_response()
-                } else {
-                    ErrorStatus::NotFound.into_response()
+            if let Some(space) = workspace.with_trx(|t| t.get_exists_space(page_id)) {
+                // TODO: check page level permission
+                match headers.get(CONTENT_TYPE).and_then(|c| c.to_str().ok()) {
+                    Some("application/json") => Json(space).into_response(),
+                    Some(mine) if mine.starts_with("text/") => {
+                        if let Some(markdown) = workspace
+                            .retry_with_trx(|t| space.to_markdown(&t.trx), 10)
+                            .ok()
+                            .flatten()
+                        {
+                            markdown.into_response()
+                        } else {
+                            ErrorStatus::InternalServerError.into_response()
+                        }
+                    }
+                    _ => {
+                        if let Some(doc) = workspace
+                            .retry_with_trx(|t| space.to_single_page(&t.trx).ok(), 10)
+                            .ok()
+                            .flatten()
+                        {
+                            doc.into_response()
+                        } else {
+                            ErrorStatus::InternalServerError.into_response()
+                        }
+                    }
                 }
-            } else if let Some(markdown) = workspace.with_trx(|t| {
-                t.get_exists_space(page_id)
-                    .and_then(|page| page.to_markdown(&t.trx))
-            }) {
-                markdown.into_response()
             } else {
                 ErrorStatus::NotFound.into_response()
             }
         }
-        Err(JwstError::WorkspaceNotFound(_)) => ErrorStatus::NotFound.into_response(),
+        Err(JwstStorageError::WorkspaceNotFound(_)) => ErrorStatus::NotFound.into_response(),
         Err(e) => {
             error!("Failed to get workspace: {:?}", e);
             ErrorStatus::InternalServerError.into_response()
@@ -405,23 +439,19 @@ pub async fn get_public_page(
 }
 
 /// Get a exists `public doc` by workspace id
-/// - Return 200 ok and `public doc` .
-/// - Return 403 Forbidden if you do not have permission.
-/// - Return 404 Not Found if `Workspace` is not exists.
-/// - Return 500 Internal Server Error if database error.
 #[utoipa::path(
     get,
     tag = "Workspace",
     context_path = "/api/public",
-    path = "/doc/{workspace_id}",
+    path = "/workspace/{workspace_id}",
     params(
         ("workspace_id", description = "workspace id"),
     ),
     responses(
         (status = 200, description = "Successfully get public doc.", body =Vec<u8>,),
-        (status = 403, description = "Sorry, you do not have permission."),
+        (status = 403, description = "Not a public workspace."),
         (status = 404, description = "Workspace not found."),
-        (status = 500, description = "Server error, please try again later.")
+        (status = 500, description = "Server internal error.")
     )
 )]
 #[instrument(skip(ctx))]
@@ -445,13 +475,13 @@ pub async fn get_public_doc(
 async fn get_workspace_doc(ctx: Arc<Context>, workspace_id: String) -> Response {
     match ctx.storage.get_workspace(workspace_id).await {
         Ok(workspace) => {
-            if let Some(update) = workspace.sync_migration(50) {
+            if let Ok(update) = workspace.sync_migration(50) {
                 update.into_response()
             } else {
                 ErrorStatus::NotFound.into_response()
             }
         }
-        Err(JwstError::WorkspaceNotFound(_)) => ErrorStatus::NotFound.into_response(),
+        Err(JwstStorageError::WorkspaceNotFound(_)) => ErrorStatus::NotFound.into_response(),
         Err(e) => {
             error!("Failed to get workspace: {:?}", e);
             ErrorStatus::InternalServerError.into_response()
@@ -536,7 +566,7 @@ mod test {
     #[tokio::test]
     async fn test_create_workspace() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -601,7 +631,7 @@ mod test {
     #[tokio::test]
     async fn test_get_workspace() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -674,7 +704,7 @@ mod test {
     #[tokio::test]
     async fn test_get_workspace_by_id() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -747,7 +777,7 @@ mod test {
     #[tokio::test]
     async fn test_update_workspace() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -839,7 +869,7 @@ mod test {
     #[tokio::test]
     async fn test_delete_workspace() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -911,7 +941,7 @@ mod test {
     #[tokio::test]
     async fn test_get_doc() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -983,9 +1013,10 @@ mod test {
     #[tokio::test]
     async fn test_get_public_doc() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
+
         //create user
         let client = TestClient::new(app);
         let body_data = json!({
@@ -1003,6 +1034,7 @@ mod test {
             .send()
             .await;
         assert_eq!(resp.status(), StatusCode::OK);
+
         //login user
         let body_data = json!({
             "type": "DebugLoginUser",
@@ -1027,6 +1059,7 @@ mod test {
                 .map(|byte| Ok::<_, std::io::Error>(Bytes::from(vec![byte]))),
         );
         let body_stream = Body::wrap_stream(test_data_stream.clone());
+
         //create workspace
         let resp = client
             .post("/workspace")
@@ -1038,14 +1071,14 @@ mod test {
         assert_eq!(resp.status(), StatusCode::OK);
         let resp_json: serde_json::Value = resp.json().await;
         let workspace_id = resp_json["id"].as_str().unwrap().to_string();
-        let public_url = format!("/public/doc/{}", workspace_id.clone());
-
+        let public_url = format!("/public/workspace/{}", workspace_id.clone());
         let resp = client
             .get(&public_url)
             .header("authorization", format!("{}", access_token.clone()))
             .send()
             .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
         //public workspace
         let url = format!("/workspace/{}", workspace_id.clone());
         let body_data = json!({
@@ -1063,8 +1096,18 @@ mod test {
         let resp_json: serde_json::Value = resp.json().await;
         let is_workspace_public = resp_json["public"].as_bool().unwrap();
         assert_eq!(is_workspace_public, true);
-        //get public doc
 
+        // check public workspace
+        let url = format!("/public/workspace/{}", workspace_id);
+        let resp = client
+            .get(&url)
+            .header("Content-Type", "application/json")
+            .send()
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // TODO: check public page
+
+        //get not public doc
         let resp = client
             .get(&public_url)
             .header("authorization", format!("{}", access_token.clone()))
@@ -1072,7 +1115,7 @@ mod test {
             .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let resp = client
-            .get("/public/doc/mock_id")
+            .get("/public/workspace/mock_id")
             .header("authorization", format!("{}", access_token.clone()))
             .send()
             .await;

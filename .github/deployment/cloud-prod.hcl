@@ -52,15 +52,17 @@ job "affine-cloud-prod" {
       driver = "docker"
 
       env {
-
+        AFFINE_CLOUD_LOG             = "info,mio=off,hyper=off,rustls=off,tantivy=off,sqlx::query=off,jwst_rpc=trace,jwst_rpc::context=info,affine_cloud=trace"
+        JWT_ACCESS_TOKEN_EXPIRES_IN  = "3600"
+        JWT_REFRESH_TOKEN_EXPIRES_IN = "2592000"
       }
       template {
         data = <<EOH
-DOCKER_TAG          = "{{ key "service/production/affine-cloud/tag" }}"
-DATABASE_URL        = "postgresql://affine:{{ key "service/production/affine-cloud/database_password" }}@{{ env "NOMAD_ADDR_postgres" }}/affine"
-SIGN_KEY            = "{{ key "service/production/affine-cloud/sign_key" }}"
-MAIL_ACCOUNT        = "{{ key "service/production/affine-cloud/mail_account" }}"
-MAIL_PASSWORD       = "{{ key "service/production/affine-cloud/mail_password" }}"
+DOCKER_TAG    = "{{ key "service/production/affine-cloud/tag" }}"
+DATABASE_URL  = "postgresql://affine:{{ key "service/production/affine-cloud/database_password" }}@{{ env "NOMAD_ADDR_postgres" }}/affine"
+SIGN_KEY      = "{{ key "service/production/affine-cloud/sign_key" }}"
+MAIL_ACCOUNT  = "{{ key "service/production/affine-cloud/mail_account" }}"
+MAIL_PASSWORD = "{{ key "service/production/affine-cloud/mail_password" }}"
 EOH
 
         destination = "secrets/.env"
@@ -68,7 +70,7 @@ EOH
       }
 
       config {
-        image      = "ghcr.io/toeverything/cloud:${DOCKER_TAG}"
+        image      = "ghcr.io/toeverything/cloud-self-hosted:${DOCKER_TAG}"
         force_pull = true
         ports      = ["affine-cloud"]
       }

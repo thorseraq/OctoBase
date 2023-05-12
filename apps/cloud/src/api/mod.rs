@@ -8,14 +8,16 @@ mod workspace;
 
 pub use collaboration::make_ws_route;
 
-use crate::{context::Context, error_status::ErrorStatus, layer::make_firebase_auth_layer};
+use crate::{
+    context::Context, infrastructure::error_status::ErrorStatus, layer::make_firebase_auth_layer,
+};
 use axum::{
     extract::Query,
     response::{IntoResponse, Response},
     routing::{delete, get, post, put, Router},
     Extension, Json,
 };
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use cloud_database::{Claims, MakeToken, RefreshToken, User, UserQuery, UserToken};
 use jwst_logger::{error, info, instrument, tracing};
 use lib0::any::Any;
@@ -31,16 +33,16 @@ use utoipa::OpenApi;
         common::health_check,
         workspace::get_doc,
         workspace::get_public_doc,
+        workspace::get_public_page,
         workspace::get_workspaces,
         workspace::get_workspace_by_id,
         workspace::create_workspace,
         workspace::update_workspace,
         workspace::delete_workspace,
         workspace::search_workspace,
-        blobs::get_blob,
-        blobs::upload_blob,
         blobs::get_blob_in_workspace,
         blobs::upload_blob_in_workspace,
+        blobs::get_user_resource_usage,
         permissions::get_members,
         permissions::invite_member,
         permissions::accept_invitation,
@@ -56,7 +58,7 @@ use utoipa::OpenApi;
 struct ApiDoc;
 
 pub fn make_api_doc_route(route: Router) -> Router {
-    jwst_static::with_api_doc_v3(route, ApiDoc::openapi(), env!("CARGO_PKG_NAME"))
+    cloud_infra::with_api_doc(route, ApiDoc::openapi(), env!("CARGO_PKG_NAME"))
 }
 
 pub fn make_rest_route(ctx: Arc<Context>) -> Router {
@@ -64,12 +66,13 @@ pub fn make_rest_route(ctx: Arc<Context>) -> Router {
         .route("/healthz", get(common::health_check))
         .route("/user", get(query_user))
         .route("/user/token", post(make_token))
-        .route("/blob", put(blobs::upload_blob))
-        .route("/blob/:name", get(blobs::get_blob))
         .route("/invitation/:path", post(permissions::accept_invitation))
         .nest_service("/global/sync", get(global_ws_handler))
-        .route("/public/doc/:id", get(workspace::get_public_doc))
-        .route("/public/page/:id/:page_id", get(workspace::get_public_page))
+        .route("/public/workspace/:id", get(workspace::get_public_doc))
+        .route(
+            "/public/workspace/:id/:page_id",
+            get(workspace::get_public_page),
+        )
         // TODO: Will consider this permission in the future
         .route(
             "/workspace/:id/blob/:name",
@@ -98,6 +101,7 @@ pub fn make_rest_route(ctx: Arc<Context>) -> Router {
                 )
                 .route("/workspace/:id/blob", put(blobs::upload_blob_in_workspace))
                 .route("/permission/:id", delete(permissions::remove_user))
+                .route("/resource/usage", get(blobs::get_user_resource_usage))
                 .layer(make_firebase_auth_layer(ctx.key.jwt_decode.clone())),
         )
 }
@@ -192,14 +196,27 @@ pub async fn make_token(
                 return ErrorStatus::BadRequest.into_response();
             }
         }
-        MakeToken::Google { token } => (
-            if let Some(claims) = ctx.firebase.lock().await.decode_google_token(token).await {
-                ctx.db.google_user_login(&claims).await.map(Some)
-            } else {
-                Ok(None)
-            },
-            None,
-        ),
+        MakeToken::Google { token } => {
+            match ctx
+                .firebase
+                .lock()
+                .await
+                .decode_google_token(token, ctx.config.refresh_token_expires_in)
+                .await
+            {
+                Ok(claims) => match ctx.db.firebase_user_login(&claims).await {
+                    Ok(user) => (Ok(Some(user)), None),
+                    Err(e) => {
+                        error!("failed to auth: {:?}", e,);
+                        return ErrorStatus::InternalServerError.into_response();
+                    }
+                },
+                Err(e) => {
+                    error!("failed to check token: {:?}", e);
+                    return ErrorStatus::Unauthorized.into_response();
+                }
+            }
+        }
         MakeToken::Refresh { token } => {
             let Ok(data) = ctx.key.decrypt_aes_base64(token.clone()) else {
                 return ErrorStatus::BadRequest.into_response();
@@ -217,39 +234,11 @@ pub async fn make_token(
         }
     };
 
-    let refresh_token_expire_time = std::env::var("JWT_REFRESH_TOKEN_EXPIRE_DAY")
-        .ok()
-        .and_then(|day| day.parse::<i64>().ok())
-        .map(|day| {
-            if day > 0 {
-                Duration::days(day)
-            } else {
-                // if day is 0, set expire time to 1 second
-                // that means token will expire immediately
-                Duration::seconds(1)
-            }
-        })
-        .unwrap_or_else(|| Duration::days(180));
-
-    let access_token_expire_time = std::env::var("JWT_ACCESS_TOKEN_EXPIRE_SECONDS")
-        .ok()
-        .and_then(|seconds| seconds.parse::<i64>().ok())
-        .map(|seconds| {
-            if seconds > 0 {
-                Duration::seconds(seconds)
-            } else {
-                // if day is 0, set expire time to 1 second
-                // that means token will expire immediately
-                Duration::seconds(1)
-            }
-        })
-        .unwrap_or_else(|| Duration::minutes(60));
-
     match user {
         Ok(Some(user)) => {
             let Some(refresh) = refresh.or_else(|| {
                 let refresh = RefreshToken {
-                    expires: Utc::now().naive_utc() + refresh_token_expire_time,
+                    expires: Utc::now().naive_utc() + ctx.config.refresh_token_expires_in,
                     user_id: user.id.clone(),
                     token_nonce: user.token_nonce.unwrap(),
                 };
@@ -262,7 +251,7 @@ pub async fn make_token(
             };
 
             let claims = Claims {
-                exp: Utc::now().naive_utc() + access_token_expire_time,
+                exp: Utc::now().naive_utc() + ctx.config.access_token_expires_in,
                 user: User {
                     id: user.id,
                     name: user.name,
@@ -295,7 +284,7 @@ mod test {
     #[tokio::test]
     async fn test_query_user() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let new_user = context
             .db
             .create_user(CreateUser {
@@ -329,10 +318,10 @@ mod test {
 
     #[tokio::test]
     async fn test_with_token_expire() {
-        std::env::set_var("JWT_REFRESH_TOKEN_EXPIRE_DAY", "0");
-        std::env::set_var("JWT_ACCESS_TOKEN_EXPIRE_SECONDS", "10");
+        std::env::set_var("JWT_REFRESH_TOKEN_EXPIRES_IN", "10");
+        std::env::set_var("JWT_ACCESS_TOKEN_EXPIRES_IN", "10");
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = super::make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -385,7 +374,7 @@ mod test {
     #[tokio::test]
     async fn test_make_token_with_valid_request() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = super::make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -437,7 +426,7 @@ mod test {
     #[tokio::test]
     async fn test_make_token_with_invalid_request() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = super::make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 

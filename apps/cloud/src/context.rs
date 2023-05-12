@@ -1,14 +1,15 @@
-use cloud_components::{FirebaseContext, KeyContext, MailContext};
+use crate::application::blob_service::BlobService;
+
+use super::{api::UserChannel, config::Config, utils::create_debug_collaboration_workspace};
 use cloud_database::CloudDatabase;
+use cloud_infra::{FirebaseContext, KeyContext, MailContext};
 use jwst::SearchResults;
-use jwst_logger::{error, warn};
+use jwst_logger::{error, info, warn};
 use jwst_rpc::{BroadcastChannels, BroadcastType, RpcContextImpl};
 use jwst_storage::JwstStorage;
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 use tempfile::{tempdir, TempDir};
 use tokio::sync::{Mutex, RwLock};
-
-use crate::api::UserChannel;
 
 pub struct Context {
     pub key: KeyContext,
@@ -18,7 +19,9 @@ pub struct Context {
     pub storage: JwstStorage,
     pub user_channel: UserChannel,
     pub channel: BroadcastChannels,
+    pub config: Config,
     _dir: Option<TempDir>,
+    pub blob_service: BlobService,
 }
 
 impl Context {
@@ -26,29 +29,44 @@ impl Context {
         let (_dir, cloud, storage) = if let Ok(url) = dotenvy::var("DATABASE_URL") {
             (None, url.clone(), format!("{url}_binary"))
         } else {
-            let dir = tempdir().unwrap();
-            let path = dir.path();
+            let (path, dir) = if let Ok(dir) = dotenvy::var("DATABASE_DIR") {
+                let dir = Path::new(&dir);
+                if !dir.try_exists().unwrap_or(false) {
+                    std::fs::create_dir(dir).expect("Cannot create dir");
+                }
+                (dir.to_path_buf(), None)
+            } else {
+                let dir = tempdir().expect("Cannot create temp dir");
+                warn!("!!! Be careful, the data is stored in a temporary directory !!!");
+                (dir.path().to_path_buf(), Some(dir))
+            };
 
-            warn!(
-                "!!! no database url provided, store in {} !!!",
-                path.display()
-            );
-            warn!("!!! please set DATABASE_URL in .env file or environmental variable to save your data !!!");
+            warn!("!!! Please set `DATABASE_URL` in .env file or environmental variable to save your data !!!");
+            info!("!!! The data is stored in {} !!!", path.display());
             let cloud = format!("sqlite:{}?mode=rwc", path.join("cloud.db").display());
             let storage = format!("sqlite:{}?mode=rwc", path.join("storage.db").display());
 
-            (Some(dir), cloud, storage)
+            (dir, cloud, storage)
         };
+
+        let db = CloudDatabase::init_pool(&cloud)
+            .await
+            .expect("Cannot create cloud database");
+        let storage = JwstStorage::new(&storage)
+            .await
+            .expect("Cannot create storage");
+
+        let blob_service = BlobService::new();
+
+        if cfg!(debug_assertions) || std::env::var("JWST_DEV").is_ok() {
+            create_debug_collaboration_workspace(&db, &storage).await;
+        }
 
         Self {
             _dir,
             // =========== database ===========
-            db: CloudDatabase::init_pool(&cloud)
-                .await
-                .expect("Cannot create cloud database"),
-            storage: JwstStorage::new(&storage)
-                .await
-                .expect("Cannot create storage"),
+            db,
+            storage,
             // =========== auth ===========
             key: KeyContext::new(dotenvy::var("SIGN_KEY").ok()).expect("Cannot create key context"),
             firebase: Mutex::new(FirebaseContext::new(
@@ -66,6 +84,17 @@ impl Context {
             // =========== sync channel ===========
             channel: RwLock::new(HashMap::new()),
             user_channel: UserChannel::new(),
+            config: Config::new(),
+            blob_service,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn new_test_client(db: CloudDatabase) -> Self {
+        Self {
+            // =========== database ===========
+            db,
+            ..Self::new().await
         }
     }
 
@@ -82,7 +111,7 @@ impl Context {
                 Ok(search_results)
             }
             Err(e) => {
-                error!("cannot get workspace: {}", e);
+                error!("cannot get workspace: {:?}", e);
                 Err(Box::new(e))
             }
         }
@@ -116,14 +145,6 @@ impl Context {
         }
         for channel in closed {
             self.channel.write().await.remove(&channel);
-        }
-    }
-
-    pub async fn new_test(db: CloudDatabase) -> Self {
-        Self {
-            // =========== database ===========
-            db,
-            ..Self::new().await
         }
     }
 }

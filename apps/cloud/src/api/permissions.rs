@@ -1,4 +1,4 @@
-use crate::{context::Context, error_status::ErrorStatus};
+use crate::{context::Context, infrastructure::error_status::ErrorStatus};
 use axum::{
     extract::Path,
     http::{
@@ -9,11 +9,12 @@ use axum::{
     Extension, Json,
 };
 use cloud_database::{Claims, CreatePermission, PermissionType, UserCred};
-use jwst::error;
+use image::ImageOutputFormat;
+use jwst::{error, BlobStorage};
 use jwst_logger::{info, instrument, tracing};
 use lettre::message::Mailbox;
+use std::io::Cursor;
 use std::sync::Arc;
-
 /// Get workspace's `Members`
 /// - Return 200 ok and `Members`.
 /// - Return 400 if request parameter error.
@@ -128,8 +129,8 @@ pub async fn invite_member(
         };
 
         let Ok(addr) = data.email.clone().parse() else {
-        return ErrorStatus::BadRequest.into_response()
-    };
+            return ErrorStatus::BadRequest.into_response()
+        };
 
         let (permission_id, user_cred) = match ctx
             .db
@@ -165,18 +166,63 @@ pub async fn invite_member(
         {
             Ok(metadata) => metadata,
             Err(e) => {
+                if let Err(e) = ctx.db.delete_permission(permission_id).await {
+                    error!("Failed to withdraw permissions: {}", e);
+                }
                 error!("Failed to send email: {}", e);
                 return ErrorStatus::InternalServerError.into_response();
             }
         };
 
+        let workspace_avatar_data = match metadata.avatar.clone() {
+            Some(avatar) => match ctx
+                .storage
+                .blobs()
+                .get_blob(Some(workspace_id.clone()), avatar.clone(), None)
+                .await
+            {
+                Ok(avatar) => {
+                    info!("avatar: Done");
+                    avatar
+                }
+                Err(e) => {
+                    error!("Failed to get workspace avatar: {}", e);
+                    Vec::new()
+                }
+            },
+            None => {
+                info!("avatar: None");
+                Vec::new()
+            }
+        };
+
+        fn convert_to_jpeg(data: &[u8]) -> Result<Vec<u8>, image::ImageError> {
+            let image = image::load_from_memory(data)?;
+            let mut buffer = Cursor::new(Vec::new());
+            image.write_to(&mut buffer, ImageOutputFormat::Jpeg(80))?;
+            Ok(buffer.into_inner())
+        }
+        let workspace_avatar_data = match convert_to_jpeg(&workspace_avatar_data) {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to convert avatar to jpeg: {}", e);
+                Vec::new()
+            }
+        };
         let Ok(invite_code) = ctx.key.encrypt_aes_base64(permission_id.as_bytes()) else {
             return ErrorStatus::InternalServerError.into_response();
         };
         if !is_test_email {
             if let Err(e) = ctx
                 .mail
-                .send_invite_email(send_to, metadata, site_url, &claims, &invite_code)
+                .send_invite_email(
+                    send_to,
+                    metadata,
+                    site_url,
+                    &claims,
+                    &invite_code,
+                    workspace_avatar_data,
+                )
                 .await
             {
                 if let Err(e) = ctx.db.delete_permission(permission_id).await {
@@ -341,12 +387,15 @@ pub async fn remove_user(
         }
     };
 
-    let permission_model = ctx
-        .db
-        .get_permission_by_id(id.clone())
-        .await
-        .unwrap()
-        .unwrap();
+    let permission_result = match ctx.db.get_permission_by_id(id.clone()).await {
+        Ok(result) => result,
+        Err(_) => return ErrorStatus::InternalServerError.into_response(),
+    };
+    let permission_model = match permission_result {
+        Some(model) => model,
+        None => return ErrorStatus::InternalServerError.into_response(),
+    };
+
     match ctx.db.delete_permission(id).await {
         Ok(true) => {
             if let Some(user_id) = permission_model.user_id {
@@ -384,7 +433,7 @@ mod test {
     #[tokio::test]
     async fn test_get_member() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -461,7 +510,7 @@ mod test {
     #[tokio::test]
     async fn test_invite_member() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -556,7 +605,7 @@ mod test {
     #[tokio::test]
     async fn test_accept_invitation() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -695,7 +744,7 @@ mod test {
     #[tokio::test]
     async fn test_leave_workspace() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 
@@ -849,7 +898,7 @@ mod test {
     #[tokio::test]
     async fn test_remove_user() {
         let pool = CloudDatabase::init_pool("sqlite::memory:").await.unwrap();
-        let context = Context::new_test(pool).await;
+        let context = Context::new_test_client(pool).await;
         let ctx = Arc::new(context);
         let app = make_rest_route(ctx.clone()).layer(Extension(ctx.clone()));
 

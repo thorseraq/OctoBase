@@ -1,39 +1,11 @@
 use super::{entities::prelude::*, *};
+use crate::types::JwstStorageResult;
 use jwst::{sync_encode_update, DocStorage, Workspace};
 use jwst_storage_migration::{Migrator, MigratorTrait};
-use std::{
-    collections::hash_map::Entry,
-    panic::{catch_unwind, AssertUnwindSafe},
-};
-use yrs::{updates::decoder::Decode, Doc, ReadTxn, StateVector, Transact, Update};
+use std::collections::hash_map::Entry;
+use yrs::{Doc, ReadTxn, StateVector, Transact};
 
 const MAX_TRIM_UPDATE_LIMIT: u64 = 500;
-
-fn migrate_update(updates: Vec<<Docs as EntityTrait>::Model>, doc: Doc) -> Doc {
-    {
-        let mut trx = doc.transact_mut();
-        for update in updates {
-            let id = update.timestamp;
-            match Update::decode_v1(&update.blob) {
-                Ok(update) => {
-                    if let Err(e) = catch_unwind(AssertUnwindSafe(|| trx.apply_update(update))) {
-                        warn!("update {} merge failed, skip it: {:?}", id, e);
-                    }
-                }
-                Err(err) => warn!("failed to decode update: {:?}", err),
-            }
-        }
-        trx.commit();
-    }
-
-    trace!(
-        "migrate_update: {:?}",
-        doc.transact()
-            .encode_state_as_update_v1(&StateVector::default())
-    );
-
-    doc
-}
 
 type DocsModel = <Docs as EntityTrait>::Model;
 type DocsActiveModel = super::entities::docs::ActiveModel;
@@ -42,15 +14,16 @@ type DocsColumn = <Docs as EntityTrait>::Column;
 pub struct DocDBStorage {
     bucket: Arc<Bucket>,
     pub(super) pool: DatabaseConnection,
-    workspaces: RwLock<HashMap<String, Workspace>>,
+    workspaces: RwLock<HashMap<String, Workspace>>, // memory cache
     remote: RwLock<HashMap<String, Sender<Vec<u8>>>>,
 }
 
 impl DocDBStorage {
-    pub async fn init_with_pool(pool: DatabaseConnection, bucket: Arc<Bucket>) -> JwstResult<Self> {
-        Migrator::up(&pool, None)
-            .await
-            .context("failed to run migration")?;
+    pub async fn init_with_pool(
+        pool: DatabaseConnection,
+        bucket: Arc<Bucket>,
+    ) -> JwstStorageResult<Self> {
+        Migrator::up(&pool, None).await?;
 
         Ok(Self {
             bucket,
@@ -60,7 +33,7 @@ impl DocDBStorage {
         })
     }
 
-    pub async fn init_pool(database: &str) -> JwstResult<Self> {
+    pub async fn init_pool(database: &str) -> JwstStorageResult<Self> {
         let is_sqlite = is_sqlite(database);
         let pool = create_connection(database, is_sqlite).await?;
 
@@ -71,143 +44,137 @@ impl DocDBStorage {
         &self.remote
     }
 
-    async fn all<C>(conn: &C, table: &str) -> JwstResult<Vec<DocsModel>>
+    async fn all<C>(conn: &C, workspace: &str) -> JwstStorageResult<Vec<DocsModel>>
     where
         C: ConnectionTrait,
     {
-        trace!("start scan all: {table}");
+        trace!("start scan all: {workspace}");
         let models = Docs::find()
-            .filter(DocsColumn::Workspace.eq(table))
+            .filter(DocsColumn::Workspace.eq(workspace))
             .all(conn)
-            .await
-            .context("failed to scan all updates")?;
-        trace!("end scan all: {table}, {}", models.len());
+            .await?;
+        trace!("end scan all: {workspace}, {}", models.len());
         Ok(models)
     }
 
-    async fn count<C>(conn: &C, table: &str) -> JwstResult<u64>
+    async fn count<C>(conn: &C, workspace: &str) -> JwstStorageResult<u64>
     where
         C: ConnectionTrait,
     {
-        trace!("start count: {table}");
+        trace!("start count: {workspace}");
         let count = Docs::find()
-            .filter(DocsColumn::Workspace.eq(table))
+            .filter(DocsColumn::Workspace.eq(workspace))
             .count(conn)
-            .await
-            .context("failed to count update")?;
-        trace!("end count: {table}, {count}");
+            .await?;
+        trace!("end count: {workspace}, {count}");
         Ok(count)
     }
 
-    async fn insert<C>(conn: &C, table: &str, blob: &[u8]) -> JwstResult<()>
+    async fn insert<C>(conn: &C, workspace: &str, blob: &[u8]) -> JwstStorageResult<()>
     where
         C: ConnectionTrait,
     {
-        trace!("start insert: {table}");
+        trace!("start insert: {workspace}");
         Docs::insert(DocsActiveModel {
-            workspace: Set(table.into()),
+            workspace: Set(workspace.into()),
             timestamp: Set(Utc::now().into()),
             blob: Set(blob.into()),
             ..Default::default()
         })
         .exec(conn)
-        .await
-        .context("failed to insert update")?;
-        trace!("end insert: {table}");
+        .await?;
+        trace!("end insert: {workspace}");
         Ok(())
     }
 
-    async fn replace_with<C>(conn: &C, table: &str, blob: Vec<u8>) -> JwstResult<()>
+    async fn replace_with<C>(conn: &C, workspace: &str, blob: Vec<u8>) -> JwstStorageResult<()>
     where
         C: ConnectionTrait,
     {
-        trace!("start replace: {table}");
+        trace!("start replace: {workspace}");
         Docs::delete_many()
-            .filter(DocsColumn::Workspace.eq(table))
+            .filter(DocsColumn::Workspace.eq(workspace))
             .exec(conn)
-            .await
-            .context("failed to delete old updates")?;
+            .await?;
         Docs::insert(DocsActiveModel {
-            workspace: Set(table.into()),
+            workspace: Set(workspace.into()),
             timestamp: Set(Utc::now().into()),
             blob: Set(blob),
             ..Default::default()
         })
         .exec(conn)
-        .await
-        .context("failed to insert new updates")?;
-        trace!("end replace: {table}");
+        .await?;
+        trace!("end replace: {workspace}");
         Ok(())
     }
 
-    async fn drop<C>(conn: &C, table: &str) -> JwstResult<()>
+    async fn delete<C>(conn: &C, workspace: &str) -> JwstStorageResult<()>
     where
         C: ConnectionTrait,
     {
-        trace!("start drop: {table}");
+        trace!("start drop: {workspace}");
         Docs::delete_many()
-            .filter(DocsColumn::Workspace.eq(table))
+            .filter(DocsColumn::Workspace.eq(workspace))
             .exec(conn)
-            .await
-            .context("failed to delete updates")?;
-        trace!("end drop: {table}");
+            .await?;
+        trace!("end drop: {workspace}");
         Ok(())
     }
 
-    async fn update<C>(&self, conn: &C, table: &str, blob: Vec<u8>) -> JwstResult<()>
+    async fn update<C>(&self, conn: &C, workspace: &str, blob: Vec<u8>) -> JwstStorageResult<()>
     where
         C: ConnectionTrait,
     {
-        trace!("start update: {table}");
-        let update_size = Self::count(conn, table).await?;
+        trace!("start update: {workspace}");
+        let update_size = Self::count(conn, workspace).await?;
         if update_size > MAX_TRIM_UPDATE_LIMIT - 1 {
-            trace!("full migrate update: {table}, {update_size}");
-            let data = Self::all(conn, table).await?;
+            trace!("full migrate update: {workspace}, {update_size}");
+            let doc_records = Self::all(conn, workspace).await?;
 
-            let data = tokio::task::spawn_blocking(move || {
-                let doc = migrate_update(data, Doc::default());
+            let data = tokio::task::spawn_blocking(move || utils::merge_doc_records(doc_records))
+                .await
+                .map_err(JwstStorageError::DocMerge)??;
 
-                let trx = doc.transact();
-                trx.encode_state_as_update_v1(&StateVector::default())
-            })
-            .await
-            .context("failed to merge update")?;
-
-            Self::replace_with(conn, table, data).await?;
+            Self::replace_with(conn, workspace, data).await?;
         } else {
-            trace!("insert update: {table}, {update_size}");
-            Self::insert(conn, table, &blob).await?;
+            trace!("insert update: {workspace}, {update_size}");
+            Self::insert(conn, workspace, &blob).await?;
         }
-        trace!("end update: {table}");
+        trace!("end update: {workspace}");
 
-        trace!("update {}bytes to {}", blob.len(), table);
-        if let Entry::Occupied(remote) = self.remote.write().await.entry(table.into()) {
+        trace!("update {}bytes to {}", blob.len(), workspace);
+        if let Entry::Occupied(remote) = self.remote.write().await.entry(workspace.into()) {
             let broadcast = &remote.get();
             if broadcast.send(sync_encode_update(&blob)).is_err() {
                 // broadcast failures are not fatal errors, only warnings are required
-                warn!("send {table} update to pipeline failed");
+                warn!("send {workspace} update to pipeline failed");
             }
         }
-        trace!("end update broadcast: {table}");
+        trace!("end update broadcast: {workspace}");
 
         Ok(())
     }
 
-    async fn full_migrate<C>(&self, conn: &C, table: &str, blob: Vec<u8>) -> JwstResult<()>
+    async fn full_migrate<C>(
+        &self,
+        conn: &C,
+        workspace: &str,
+        blob: Vec<u8>,
+    ) -> JwstStorageResult<()>
     where
         C: ConnectionTrait,
     {
-        trace!("start full migrate: {table}");
-        if Self::count(conn, table).await? > 0 {
-            Self::replace_with(conn, table, blob).await?;
+        trace!("start full migrate: {workspace}");
+        if Self::count(conn, workspace).await? > 0 {
+            Self::replace_with(conn, workspace, blob).await?;
         } else {
-            Self::insert(conn, table, &blob).await?;
+            Self::insert(conn, workspace, &blob).await?;
         }
-        trace!("end full migrate: {table}");
+        trace!("end full migrate: {workspace}");
         Ok(())
     }
 
-    async fn create_doc<C>(conn: &C, workspace: &str) -> JwstResult<Doc>
+    async fn create_doc<C>(conn: &C, workspace: &str) -> JwstStorageResult<Doc>
     where
         C: ConnectionTrait,
     {
@@ -219,10 +186,10 @@ impl DocDBStorage {
         if all_data.is_empty() {
             let update = doc
                 .transact()
-                .encode_state_as_update_v1(&StateVector::default());
+                .encode_state_as_update_v1(&StateVector::default())?;
             Self::insert(conn, workspace, &update).await?;
         } else {
-            doc = migrate_update(all_data, doc);
+            doc = utils::migrate_update(all_data, doc)?;
         }
         trace!("end create doc: {workspace}");
 
@@ -231,20 +198,18 @@ impl DocDBStorage {
 }
 
 #[async_trait]
-impl DocStorage for DocDBStorage {
-    async fn exists(&self, workspace_id: String) -> JwstResult<bool> {
+impl DocStorage<JwstStorageError> for DocDBStorage {
+    async fn exists(&self, workspace_id: String) -> JwstStorageResult<bool> {
         trace!("check workspace exists: get lock");
-        let _lock = self.bucket.get_lock().await;
+        let _lock = self.bucket.read().await;
 
         Ok(self.workspaces.read().await.contains_key(&workspace_id)
             || Self::count(&self.pool, &workspace_id)
                 .await
-                .map(|c| c > 0)
-                .context("failed to check workspace")
-                .map_err(JwstError::StorageError)?)
+                .map(|c| c > 0)?)
     }
 
-    async fn get(&self, workspace_id: String) -> JwstResult<Workspace> {
+    async fn get(&self, workspace_id: String) -> JwstStorageResult<Workspace> {
         trace!("get workspace: enter");
         match self.workspaces.write().await.entry(workspace_id.clone()) {
             Entry::Occupied(ws) => {
@@ -253,14 +218,10 @@ impl DocStorage for DocDBStorage {
             }
             Entry::Vacant(v) => {
                 debug!("init workspace cache: get lock");
-                let _lock = self.bucket.get_lock().await;
-
+                let _lock = self.bucket.write().await;
                 info!("init workspace cache: {workspace_id}");
                 let id = workspace_id.clone();
-                let doc = Self::create_doc(&self.pool, &id)
-                    .await
-                    .context("failed to create workspace")
-                    .map_err(JwstError::StorageError)?;
+                let doc = Self::create_doc(&self.pool, &id).await?;
 
                 let ws = Workspace::from_doc(doc, workspace_id);
                 Ok(v.insert(ws).clone())
@@ -268,45 +229,40 @@ impl DocStorage for DocDBStorage {
         }
     }
 
-    async fn write_full_update(&self, workspace_id: String, data: Vec<u8>) -> JwstResult<()> {
+    async fn write_full_update(
+        &self,
+        workspace_id: String,
+        data: Vec<u8>,
+    ) -> JwstStorageResult<()> {
         trace!("write_full_update: get lock");
-        let _lock = self.bucket.get_lock().await;
+        let _lock = self.bucket.write().await;
 
         trace!("write_doc: {:?}", data);
 
-        self.full_migrate(&self.pool, &workspace_id, data)
-            .await
-            .context("Failed to store workspace")
-            .map_err(JwstError::StorageError)?;
+        self.full_migrate(&self.pool, &workspace_id, data).await?;
 
         debug_assert_eq!(Self::count(&self.pool, &workspace_id).await?, 1u64);
 
         Ok(())
     }
 
-    async fn write_update(&self, workspace_id: String, data: &[u8]) -> JwstResult<()> {
+    async fn write_update(&self, workspace_id: String, data: &[u8]) -> JwstStorageResult<()> {
         debug!("write_update: get lock");
-        let _lock = self.bucket.get_lock().await;
+        let _lock = self.bucket.write().await;
 
         trace!("write_update: {:?}", data);
-        self.update(&self.pool, &workspace_id, data.into())
-            .await
-            .context("failed to store update workspace")
-            .map_err(JwstError::StorageError)?;
+        self.update(&self.pool, &workspace_id, data.into()).await?;
 
         Ok(())
     }
 
-    async fn delete(&self, workspace_id: String) -> JwstResult<()> {
+    async fn delete(&self, workspace_id: String) -> JwstStorageResult<()> {
         debug!("delete workspace: get lock");
-        let _lock = self.bucket.get_lock().await;
+        let _lock = self.bucket.write().await;
 
         debug!("delete workspace cache: {workspace_id}");
         self.workspaces.write().await.remove(&workspace_id);
-        DocDBStorage::drop(&self.pool, &workspace_id)
-            .await
-            .context("failed to delete workspace")
-            .map_err(JwstError::StorageError)?;
+        DocDBStorage::delete(&self.pool, &workspace_id).await?;
 
         Ok(())
     }
@@ -316,7 +272,7 @@ impl DocStorage for DocDBStorage {
 pub async fn docs_storage_test(pool: &DocDBStorage) -> anyhow::Result<()> {
     let conn = &pool.pool;
 
-    DocDBStorage::drop(conn, "basic").await?;
+    DocDBStorage::delete(conn, "basic").await?;
 
     // empty table
     assert_eq!(DocDBStorage::count(conn, "basic").await?, 0);
@@ -341,7 +297,7 @@ pub async fn docs_storage_test(pool: &DocDBStorage) -> anyhow::Result<()> {
     );
     assert_eq!(DocDBStorage::count(conn, "basic").await?, 1);
 
-    DocDBStorage::drop(conn, "basic").await?;
+    DocDBStorage::delete(conn, "basic").await?;
 
     DocDBStorage::insert(conn, "basic", &[1, 2, 3, 4]).await?;
 
@@ -431,7 +387,7 @@ pub async fn docs_storage_partial_test(pool: &DocDBStorage) -> anyhow::Result<()
 
     let conn = &pool.pool;
 
-    DocDBStorage::drop(conn, "basic").await?;
+    DocDBStorage::delete(conn, "basic").await?;
 
     // empty table
     assert_eq!(DocDBStorage::count(conn, "basic").await?, 0);
@@ -452,20 +408,20 @@ pub async fn docs_storage_partial_test(pool: &DocDBStorage) -> anyhow::Result<()
 
         ws.with_trx(|mut t| {
             let space = t.get_space("test");
-            let block = space.create(&mut t.trx, "block1", "text");
-            block.set(&mut t.trx, "test1", "value1");
+            let block = space.create(&mut t.trx, "block1", "text").unwrap();
+            block.set(&mut t.trx, "test1", "value1").unwrap();
         });
 
         ws.with_trx(|mut t| {
             let space = t.get_space("test");
             let block = space.get(&mut t.trx, "block1").unwrap();
-            block.set(&mut t.trx, "test2", "value2");
+            block.set(&mut t.trx, "test2", "value2").unwrap();
         });
 
         ws.with_trx(|mut t| {
             let space = t.get_space("test");
-            let block = space.create(&mut t.trx, "block2", "block2");
-            block.set(&mut t.trx, "test3", "value3");
+            let block = space.create(&mut t.trx, "block2", "block2").unwrap();
+            block.set(&mut t.trx, "test3", "value3").unwrap();
         });
 
         drop(sub);
@@ -478,20 +434,22 @@ pub async fn docs_storage_partial_test(pool: &DocDBStorage) -> anyhow::Result<()
         assert_eq!(DocDBStorage::count(conn, "basic").await?, 4);
     }
 
+    // clear memory cache
     pool.workspaces.write().await.clear();
 
     {
+        // memory cache empty, retrieve data from db
         let ws = pool.get("basic".into()).await.unwrap();
         ws.with_trx(|mut t| {
             let space = t.get_space("test");
 
             let block = space.get(&mut t.trx, "block1").unwrap();
-            assert_eq!(block.flavor(&t.trx), "text");
+            assert_eq!(block.flavour(&t.trx), "text");
             assert_eq!(block.get(&t.trx, "test1"), Some("value1".into()));
             assert_eq!(block.get(&t.trx, "test2"), Some("value2".into()));
 
             let block = space.get(&mut t.trx, "block2").unwrap();
-            assert_eq!(block.flavor(&t.trx), "block2");
+            assert_eq!(block.flavour(&t.trx), "block2");
             assert_eq!(block.get(&t.trx, "test3"), Some("value3".into()));
         });
     }

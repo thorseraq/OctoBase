@@ -3,8 +3,8 @@ use super::{
     *,
 };
 use async_trait::async_trait;
-use jwst::{DocStorage, JwstResult, Workspace};
-use jwst_storage::JwstStorage;
+use jwst::{DocStorage, Workspace};
+use jwst_storage::{JwstStorage, JwstStorageResult};
 use std::ops::Deref;
 use tokio::sync::{
     broadcast::{channel as broadcast, Receiver as BroadcastReceiver, Sender as BroadcastSender},
@@ -37,7 +37,7 @@ pub trait RpcContextImpl<'a> {
     fn get_storage(&self) -> &JwstStorage;
     fn get_channel(&self) -> &BroadcastChannels;
 
-    async fn get_workspace(&self, id: &str) -> JwstResult<Workspace> {
+    async fn get_workspace(&self, id: &str) -> JwstStorageResult<Workspace> {
         self.get_storage().create_workspace(id).await
     }
 
@@ -120,12 +120,12 @@ pub trait RpcContextImpl<'a> {
                         debug!("save {} updates", updates.len());
                         if let Some(update) = merge_updates(&id, &updates) {
                             if let Err(e) = docs.write_update(id.clone(), &update).await {
-                                error!("failed to save update of {}: {}", id, e);
+                                error!("failed to save update of {}: {:?}", id, e);
                             }
                         } else {
                             for update in updates.as_slice() {
                                 if let Err(e) = docs.write_update(id.clone(), update).await {
-                                    error!("failed to save update of {}: {}", id, e);
+                                    error!("failed to save update of {}: {:?}", id, e);
                                 }
                             }
                         }

@@ -1,4 +1,6 @@
-use super::*;
+use crate::infrastructure::auth::get_claim_from_headers;
+
+use super::{infrastructure::error_status::ErrorStatus, *};
 use axum::{
     body::Body,
     http::{Request, Response},
@@ -6,11 +8,10 @@ use axum::{
     Router,
 };
 use bytes::Bytes;
-use chrono::Utc;
 use cloud_database::Claims;
 use futures_util::future::BoxFuture;
 use http_body::combinators::UnsyncBoxBody;
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::DecodingKey;
 use nanoid::nanoid;
 use std::sync::Arc;
 use tower_http::{
@@ -19,8 +20,6 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::error_status::ErrorStatus;
-
 #[derive(Clone)]
 pub struct Auth {
     decoding_key: DecodingKey,
@@ -28,15 +27,7 @@ pub struct Auth {
 
 impl Auth {
     fn check_auth<B>(key: DecodingKey, request: &Request<B>) -> Option<Claims> {
-        request
-            .headers()
-            .get("Authorization")
-            .and_then(|header| header.to_str().ok())
-            .and_then(|token| {
-                decode::<Claims>(token, &key, &Validation::default())
-                    .map(|d| d.claims)
-                    .ok()
-            })
+        get_claim_from_headers(request.headers(), &key)
     }
 }
 
@@ -52,12 +43,8 @@ where
         let key = self.decoding_key.clone();
         Box::pin(async move {
             if let Some(claims) = Self::check_auth(key, &request) {
-                if claims.exp > Utc::now().naive_utc() {
-                    request.extensions_mut().insert(Arc::new(claims));
-                    Ok(request)
-                } else {
-                    Err(ErrorStatus::Unauthorized.into_response())
-                }
+                request.extensions_mut().insert(Arc::new(claims));
+                Ok(request)
             } else {
                 Err(ErrorStatus::Unauthorized.into_response())
             }
@@ -96,12 +83,28 @@ pub fn make_tracing_layer(router: Router) -> Router {
                 );
                 let uri = request.uri();
                 if !EXCLUDED_URIS.contains(&uri.path()) {
+                    use form_urlencoded::{parse, Serializer};
                     info!(
-                        "[HTTP:request_id={}] {:?} {} {}",
+                        "[HTTP:request_id={}] {:?} {} {}{}",
                         request_id,
                         request.version(),
                         request.method(),
-                        request.uri(),
+                        uri.path(),
+                        &if let Some(query) = uri
+                            .query()
+                            .map(|q| parse(q.as_bytes())
+                                .filter(|i| i.0 != "token")
+                                .fold(Serializer::new(String::new()), |mut s, i| {
+                                    s.append_pair(&i.0, &i.1);
+                                    s
+                                })
+                                .finish())
+                            .and_then(|q| (!q.is_empty()).then_some(q))
+                        {
+                            format!("?{}", query)
+                        } else {
+                            "".to_string()
+                        },
                     );
                 }
 

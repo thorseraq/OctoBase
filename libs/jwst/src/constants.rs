@@ -1,22 +1,30 @@
+pub mod metadata {
+    /// `name`
+    pub const NAME: &str = "name";
+
+    /// `avatar`
+    pub const AVATAR: &str = "avatar";
+
+    /// `search_index`
+    pub const SEARCH_INDEX: &str = "search_index";
+}
+
 /// The sys constants.
 pub mod sys {
+    /// `sys:id`
+    pub const ID: &str = "sys:id";
+
     /// `sys:children`
     pub const CHILDREN: &str = "sys:children";
 
     /// `sys:created`
     pub const CREATED: &str = "sys:created";
 
-    /// `sys:flavor`
-    pub const FLAVOR: &str = "sys:flavor";
-
-    /// `sys:flavor`
+    /// `sys:flavour`
     pub const FLAVOUR: &str = "sys:flavour";
 
     /// `sys:parent`
     pub const PARENT: &str = "sys:parent";
-
-    /// `sys:version`
-    pub const VERSION: &str = "sys:version";
 }
 
 pub mod space {

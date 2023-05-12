@@ -1,4 +1,5 @@
 mod database;
+mod utils;
 
 use super::*;
 use database::DocDBStorage;
@@ -11,16 +12,19 @@ pub(super) use database::full_migration_stress_test;
 pub(super) use database::{docs_storage_partial_test, docs_storage_test};
 
 #[derive(Clone)]
-pub struct DocAutoStorage(pub(super) Arc<DocDBStorage>);
+pub struct SharedDocDBStorage(pub(super) Arc<DocDBStorage>);
 
-impl DocAutoStorage {
-    pub async fn init_with_pool(pool: DatabaseConnection, bucket: Arc<Bucket>) -> JwstResult<Self> {
+impl SharedDocDBStorage {
+    pub async fn init_with_pool(
+        pool: DatabaseConnection,
+        bucket: Arc<Bucket>,
+    ) -> JwstStorageResult<Self> {
         Ok(Self(Arc::new(
             DocDBStorage::init_with_pool(pool, bucket).await?,
         )))
     }
 
-    pub async fn init_pool(database: &str) -> JwstResult<Self> {
+    pub async fn init_pool(database: &str) -> JwstStorageResult<Self> {
         Ok(Self(Arc::new(DocDBStorage::init_pool(database).await?)))
     }
 
@@ -30,41 +34,44 @@ impl DocAutoStorage {
 }
 
 #[async_trait]
-impl DocStorage for DocAutoStorage {
-    async fn exists(&self, id: String) -> JwstResult<bool> {
+impl DocStorage<JwstStorageError> for SharedDocDBStorage {
+    async fn exists(&self, id: String) -> JwstStorageResult<bool> {
         self.0.exists(id).await
     }
 
-    async fn get(&self, id: String) -> JwstResult<Workspace> {
+    async fn get(&self, id: String) -> JwstStorageResult<Workspace> {
         self.0.get(id).await
     }
 
-    async fn write_full_update(&self, id: String, data: Vec<u8>) -> JwstResult<()> {
+    async fn write_full_update(&self, id: String, data: Vec<u8>) -> JwstStorageResult<()> {
         self.0.write_full_update(id, data).await
     }
 
-    async fn write_update(&self, id: String, data: &[u8]) -> JwstResult<()> {
+    async fn write_update(&self, id: String, data: &[u8]) -> JwstStorageResult<()> {
         self.0.write_update(id, data).await
     }
 
-    async fn delete(&self, id: String) -> JwstResult<()> {
+    async fn delete(&self, id: String) -> JwstStorageResult<()> {
         self.0.delete(id).await
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{error, info, DocAutoStorage, DocStorage};
-    use jwst::JwstError;
+    use super::{error, info, DocStorage, SharedDocDBStorage};
+    use crate::{JwstStorageError, JwstStorageResult};
     use rand::random;
     use std::collections::HashSet;
     use tokio::task::JoinSet;
 
-    async fn create_workspace_stress_test(storage: DocAutoStorage) -> anyhow::Result<()> {
+    async fn create_workspace_stress_test(
+        storage: SharedDocDBStorage,
+        range: usize,
+    ) -> JwstStorageResult<()> {
         let mut join_set = JoinSet::new();
         let mut set = HashSet::new();
 
-        for _ in 0..10000 {
+        for _ in 0..range {
             let id = random::<u64>().to_string();
             set.insert(id.clone());
             let storage = storage.clone();
@@ -74,17 +81,14 @@ mod test {
                 let workspace = storage.get(id.clone()).await?;
                 info!("create workspace finish: {}", id);
                 assert_eq!(workspace.id(), id);
-                Ok::<_, JwstError>(())
+                Ok::<_, JwstStorageError>(())
             });
         }
 
-        let mut a = 0;
         while let Some(ret) = join_set.join_next().await {
-            if let Err(e) = ret? {
+            if let Err(e) = ret.map_err(JwstStorageError::DocMerge)? {
                 error!("failed to execute creator: {e}");
             }
-            a += 1;
-            info!("{a}");
         }
 
         for (i, id) in set.iter().enumerate() {
@@ -95,12 +99,12 @@ mod test {
                 info!("get workspace: {}", id);
                 let workspace = storage.get(id.clone()).await?;
                 assert_eq!(workspace.id(), id);
-                Ok::<_, JwstError>(())
+                Ok::<_, JwstStorageError>(())
             });
         }
 
         while let Some(ret) = join_set.join_next().await {
-            if let Err(e) = ret? {
+            if let Err(e) = ret.map_err(JwstStorageError::DocMerge)? {
                 error!("failed to execute: {e}");
             }
         }
@@ -108,12 +112,21 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_create_workspace_stress_test_faster() -> anyhow::Result<()> {
+        jwst_logger::init_logger("jwst-storage");
+        let storage = SharedDocDBStorage::init_pool("sqlite::memory:").await?;
+        create_workspace_stress_test(storage.clone(), 100).await?;
+
+        Ok(())
+    }
+
     #[ignore = "for stress testing"]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn sqlite_create_workspace_stress_test() -> anyhow::Result<()> {
-        jwst_logger::init_logger();
-        let storage = DocAutoStorage::init_pool("sqlite::memory:").await?;
-        create_workspace_stress_test(storage.clone()).await?;
+        jwst_logger::init_logger("jwst-storage");
+        let storage = SharedDocDBStorage::init_pool("sqlite::memory:").await?;
+        create_workspace_stress_test(storage.clone(), 10000).await?;
 
         Ok(())
     }
@@ -121,11 +134,12 @@ mod test {
     #[ignore = "for stress testing"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn postgres_create_workspace_stress_test() -> anyhow::Result<()> {
-        jwst_logger::init_logger();
-        let storage =
-            DocAutoStorage::init_pool("postgresql://affine:affine@localhost:5432/affine_binary")
-                .await?;
-        create_workspace_stress_test(storage.clone()).await?;
+        jwst_logger::init_logger("jwst-storage");
+        let storage = SharedDocDBStorage::init_pool(
+            "postgresql://affine:affine@localhost:5432/affine_binary",
+        )
+        .await?;
+        create_workspace_stress_test(storage.clone(), 10000).await?;
 
         Ok(())
     }
@@ -135,8 +149,9 @@ mod test {
     async fn mysql_create_workspace_stress_test() -> anyhow::Result<()> {
         // jwst_logger::init_logger();
         let storage =
-            DocAutoStorage::init_pool("mysql://affine:affine@localhost:3306/affine_binary").await?;
-        create_workspace_stress_test(storage.clone()).await?;
+            SharedDocDBStorage::init_pool("mysql://affine:affine@localhost:3306/affine_binary")
+                .await?;
+        create_workspace_stress_test(storage.clone(), 10000).await?;
 
         Ok(())
     }

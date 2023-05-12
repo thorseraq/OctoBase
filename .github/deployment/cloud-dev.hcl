@@ -39,7 +39,7 @@ job "affine-cloud-dev" {
     }
 
     service {
-      tags = ["urlprefix-dev.affine.live/"]
+      tags = ["urlprefix-api.affine.live/"]
       port = "affine-cloud"
       check {
         name     = "Affine Cloud Dev Check"
@@ -58,16 +58,18 @@ job "affine-cloud-dev" {
       driver = "docker"
 
       env {
-
+        AFFINE_CLOUD_LOG             = "debug,mio=off,hyper=off,rustls=off,tantivy=off,sqlx::query=off,jwst_rpc=trace,jwst_rpc::context=info,affine_cloud=trace"
+        JWT_ACCESS_TOKEN_EXPIRES_IN  = "3600"
+        JWT_REFRESH_TOKEN_EXPIRES_IN = "2592000"
+        JWST_DEV                     = "1"
       }
       template {
         data = <<EOH
-DOCKER_TAG          = "{{ key "service/development/affine-cloud/tag" }}"
-DATABASE_URL        = "postgresql://affine:{{ key "service/development/affine-cloud/database_password" }}@{{ env "NOMAD_ADDR_postgres" }}/affine"
-SIGN_KEY            = "{{ key "service/development/affine-cloud/sign_key" }}"
-MAIL_ACCOUNT        = "{{ key "service/development/affine-cloud/mail_account" }}"
-MAIL_PASSWORD       = "{{ key "service/development/affine-cloud/mail_password" }}"
-JWST_DEV            = "1"
+DOCKER_TAG    = "{{ key "service/development/affine-cloud/tag" }}"
+DATABASE_URL  = "postgresql://affine:{{ key "service/development/affine-cloud/database_password" }}@{{ env "NOMAD_ADDR_postgres" }}/affine"
+SIGN_KEY      = "{{ key "service/development/affine-cloud/sign_key" }}"
+MAIL_ACCOUNT  = "{{ key "service/development/affine-cloud/mail_account" }}"
+MAIL_PASSWORD = "{{ key "service/development/affine-cloud/mail_password" }}"
 EOH
 
         destination = "secrets/.env"
@@ -75,7 +77,7 @@ EOH
       }
 
       config {
-        image      = "ghcr.io/toeverything/cloud:${DOCKER_TAG}"
+        image      = "ghcr.io/toeverything/cloud-self-hosted:${DOCKER_TAG}"
         force_pull = true
         ports      = ["affine-cloud"]
       }

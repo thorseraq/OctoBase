@@ -18,18 +18,21 @@ export default defineConfig({
 			enforce: 'pre',
 		},
 		replace({
+			preventAssignment: true,
 			JWT_DEV: true,
 		}),
 		visualizer(),
 	],
 	build: {
 		lib: {
-			entry: resolve(__dirname, 'lib/index.ts'),
+			entry: {
+				index: resolve(__dirname, 'lib/index.ts'),
+				'rpc/keck': resolve(__dirname, 'lib/rpc/keck.ts'),
+			},
 			name: '@toeverything/jwt',
-			fileName: 'index',
 		},
 		rollupOptions: {
-			external: [],
+			external: ['y-protocols', 'yjs', 'flexsearch', 'sift', /^lib0/],
 			output: {
 				globals: {},
 				format: 'es',

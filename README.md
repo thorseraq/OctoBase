@@ -1,13 +1,25 @@
-# OctoBase
+<div align="center">
 
-[![Issues Closed](https://img.shields.io/github/issues-closed/toeverything/OctoBase?color=6880ff)](https://github.com/toeverything/OctoBase/issues?q=is%3Aissue+is%3Aclosed)
-[![Join Telegram](https://img.shields.io/badge/join-telegram-blue)](https://t.me/affineworkos)
-[![Follow Twitter](https://img.shields.io/badge/-Twitter-grey?logo=twitter)](https://twitter.com/AffineOfficial)
-[![stars](https://img.shields.io/github/stars/toeverything/OctoBase.svg?style=flat&logo=github&colorB=red&label=stars)](https://github.com/toeverything/OctoBase)
+<h1 style="border-bottom: none">
+    <b><a href="https://octobase.pro/">Octobase</a></b><br />
+    🐙 Local-first, yet collaborative. A light-weight, scalable, data engine written in Rust.
+    <br>
+</h1>
+
+[![Rust-version-icon]](https://www.rust-lang.org/)
+[![codecov]](https://codecov.io/gh/toeverything/OctoBase)
+[![stars]](https://github.com/toeverything/OctoBase)
+[![Issues Closed]](https://github.com/toeverything/OctoBase/issues?q=is%3Aissue+is%3Aclosed)
+[![Join Telegram]](https://t.me/affineworkos)
+[![Follow Twitter]](https://twitter.com/AffineOfficial)
 
 OctoBase is an offline-available, scalable, self-contained collaborative database, which was originally designed for AFFiNE. AFFiNE is a local-first open source knowledge base that provides full functionality in any network environment.
 
 Based on OctoBase, you can not only implement a rich text editor for offline writing, but also implement richer offline collaboration functions based on OctoBase's data abstraction, such as: multidimensional tables, drawing boards, etc.
+
+</div>
+
+## Features
 
 As an offline collaborative data database, OctoBase has the following characteristics:
 
@@ -17,17 +29,47 @@ As an offline collaborative data database, OctoBase has the following characteri
 
 -   🔍 **High-performance real-time full-text indexing** with high-quality multilingual word segmentation support.
 
--   🌐 **Point-to-point / central server synchronization** with rich multi-platform native support.
+-   🌐 **CRDT-driven P2P synchronization** with rich multi-platform native support.
 
 -   🔒 **Fine-grained permission control** with advanced permission management.
 
-By providing native offline collaboration, full-text indexing, and binary storage, OctoBase enables you to easily build secure, high-performance local-first collaborative applications using the same set of data abstractions on multiple platforms.
+OctoBase provides native support for offline collaboration, full-text indexing, and binary storage, making it easy for developers to build secure and high-performance local-first collaborative applications that work seamlessly across multiple platforms.
 
-OctoBase can be used either as a stand-alone server database, or directly included in your application as an embedded database and remain fully functional.
+With OctoBase, you will have access to same data abstractions across platform that enable you to maintain consistency and coherence across all your applications, regardless of the devices or platforms used.
+
+Additionally, OctoBase can function as a standalone server database, or it can be integrated directly into your application as an embedded database while remaining fully functional.
 
 ## Project status
 
 **The OctoBase project is currently under heavy development, most components are not yet production ready. Major changes may occur at any time before the version reaches 1.0.**
+
+OctoBase has been used in [AFFiNE Cloud]. We are currently working on the following components:
+
+-   Core
+    -   ✅ CRDT operation (based on yrs)
+    -   🚧 CRDT operation (based on [jwst-codec])
+    -   ✅ CRDT-based data structure compatible with [blocksuite]
+    -   🚧 Full-text indexing
+-   Sync
+    -   ✅ Blob Sync abstraction
+        -   ✅ RESTful
+        -   🚧 S3
+    -   ✅ [Collaboration abstraction]
+        -   ✅ [WebSocket connector]
+        -   🚧 WebRTC connector
+        -   🚧 libp2p connector
+-   Storage
+    -   ✅ Storage agnostic CRDT data storage
+        -   ✅ SQLite adapter
+        -   ✅ Postgres adapter
+        -   🚧 S3 adapter
+    -   ✅ Storage agnostic Blob storage
+        -   ✅ SQLite adapter
+        -   ✅ Postgres adapter
+        -   🚧 S3 adapter
+-   Binding
+    -   🚧 [Java binding]
+    -   🚧 [Swift binding]
 
 ## Contributions
 
@@ -43,25 +85,12 @@ OctoBase aims to make it easy for developers to build local-first applications
 on all common platforms. In order to achieve this goal, we will strive to do these things:
 
 -   Make it easy to build on all supported platforms.
--   Implement basic data types that support collaboration.
--   Support peer-to-peer synchronization.
+-   CRDT-driven peer-to-peer synchronization model.
 -   Self-contained library distribution.
 -   Minimize external dependencies.
+-   Out-of-the-box permission control.
 
-## Building
-
-```bash
-# install rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# clone the repo
-git clone https://github.com/toeverything/octobase/
-# start sync server
-cargo run --bin keck
-```
-
-Now you can access <http://localhost:3000/api/docs/> through the browser.
-
-This is a simple http interface binding, which allows you to modify the data in octobase with the http interface; you can also statically link octobase to your program, modify the data through native api, and synchronize with other clients.
+You can see a summary of our recent updates here: [What's New](./apps/homepage/pages/docs/overview/whats_new.md).
 
 ## Project Overview
 
@@ -75,6 +104,7 @@ This is a simple http interface binding, which allows you to modify the data in 
 └── libs ##
     ├── jwst  ## OctoBase core library
     ├── jwst-binding ## Multilingual FFI bindings for OctoBase
+    ├── jwst-codec ## CRDT implementation for OctoBase
     ├── jwst-logger ## logger plugins for OctoBase
     ├── jwst-rpc ## sync plugins for OctoBase
     ├── jwst-storage ## storage plugins for OctoBase
@@ -89,6 +119,10 @@ In the process of project development, there are many software development conce
 
 Some amazing companies including OctoBase are looking for developers! Are you interested in helping build with OctoBase and/or its partners? Check out some of the latest [jobs available](https://github.com/toeverything/AFFiNE/blob/master/docs/jobs.md).
 
+## Building
+
+See [BUILDING.md](./apps/homepage/pages/docs/building_guide.md) for instructions on how to build Octobase from source code.
+
 ## License
 
 Currently, this repository is under **active development** and most components are not yet production ready, so all code is under [AGPL-3.0]. We will switch to [MPL 2.0] or a more looser license release after the corresponding components are ready for production.
@@ -100,3 +134,17 @@ Currently, this repository is under **active development** and most components a
 [fossil]: https://www2.fossil-scm.org/home/doc/trunk/www/index.wiki
 [sqlite]: https://sqlite.org/index.html
 [contributor license agreement]: https://github.com/toeverything/octobase/edit/master/.github/CLA.md
+[our website]: https://octobase.pro
+[codecov]: https://codecov.io/gh/toeverything/octobase/branch/master/graphs/badge.svg?branch=master
+[stars]: https://img.shields.io/github/stars/toeverything/OctoBase.svg?style=flat&logo=github&colorB=red&label=stars
+[Follow Twitter]: https://img.shields.io/badge/-Twitter-grey?logo=twitter
+[Join Telegram]: https://img.shields.io/badge/join-telegram-blue
+[Issues Closed]: https://img.shields.io/github/issues-closed/toeverything/OctoBase?color=6880ff&logo=github
+[rust-version-icon]: https://img.shields.io/badge/Rust-1.70.0-dea584?logo=rust
+[affine cloud]: https://app.affine.pro
+[jwst-codec]: ./libs/jwst-codec/
+[blocksuite]: https://github.com/toeverything/blocksuite
+[Collaboration abstraction]: https://github.com/toeverything/OctoBase/issues/287
+[WebSocket connector]: ./libs/jwst-rpc/src/connector/socket.rs
+[Java binding]: ./libs/jwst-binding/jwst-jni
+[Swift binding]: ./libs/jwst-binding/jwst-swift

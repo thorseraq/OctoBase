@@ -1,3 +1,5 @@
+use crate::infrastructure::auth::get_claim_from_token;
+
 use super::*;
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
@@ -156,26 +158,17 @@ impl UserChannel {
     }
 }
 
+#[instrument(skip(context, token))]
 pub async fn global_ws_handler(
     Extension(context): Extension<Arc<Context>>,
     Query(Param { token }): Query<Param>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let user: Option<RefreshToken> = context
-        .key
-        .decrypt_aes_base64(token)
-        .ok()
-        .and_then(|data| serde_json::from_slice(&data).ok());
-
-    let user = if let Some(user) = user {
-        if let Ok(true) = context.db.verify_refresh_token(&user).await {
-            Some(user.user_id.clone())
-        } else {
-            None
-        }
-    } else {
-        None
+    let user = match get_claim_from_token(&token, &context.key.jwt_decode) {
+        Some(claims) => Some(claims.user.id),
+        None => None,
     };
+
     ws.protocols(["AFFiNE"])
         .on_upgrade(move |socket| handle_socket(socket, user, context))
 }

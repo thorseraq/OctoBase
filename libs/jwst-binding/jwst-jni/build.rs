@@ -10,9 +10,7 @@ fn main() {
     Generator::new(TypeCases::CamelCase, Language::Java, "src").generate_interface(in_src);
 
     let template = fs::read_to_string(in_src).unwrap();
-    let template = template
-        .split("use jni_sys::*;")
-        .collect::<Vec<_>>();
+    let template = template.split("use jni_sys::*;").collect::<Vec<_>>();
     let template = template
         .first()
         .into_iter()
@@ -22,7 +20,14 @@ r#"foreign_class!(
     class JwstStorage {
         self_type JwstStorage;
         constructor JwstStorage::new(path: String) -> JwstStorage;
+        constructor JwstStorage::new_with_logger_level(path: String, level: String) -> JwstStorage;
         fn JwstStorage::error(&self) -> Option<String>; alias error;
+        fn JwstStorage::is_offline(&self) -> bool;
+        fn JwstStorage::is_initialized(&self) -> bool;
+        fn JwstStorage::is_syncing(&self) -> bool;
+        fn JwstStorage::is_finished(&self) -> bool;
+        fn JwstStorage::is_error(&self) -> bool;
+        fn JwstStorage::get_sync_state(&self) -> String;
         fn JwstStorage::connect(&mut self, workspace_id: String, remote: String) -> Option<Workspace>; alias connect;
     }
 );"#,
@@ -33,7 +38,7 @@ r#"foreign_class!(
             unimplemented!()
         }
         fn WorkspaceTransaction::remove(& mut self , block_id : String)->bool; alias remove;
-        fn WorkspaceTransaction::create<B>(& mut self , block_id : String , flavor : String)->Block; alias create;
+        fn WorkspaceTransaction::create<B>(& mut self , block_id : String , flavour : String)->Block; alias create;
         fn WorkspaceTransaction::commit(& mut self); alias commit;
     }
 );"#,
@@ -80,6 +85,12 @@ foreign_class!(
         fn remove_item(&mut self, s: String) {
             this.retain(|x| x != &s);
         }
+    }
+);"#,
+r#"foreign_callback!(
+    callback BlockObserver {
+        self_type BlockObserver;
+        onChange = BlockObserver::on_change(& self , block_ids : VecOfStrings);
     }
 );"#,
 ].iter())

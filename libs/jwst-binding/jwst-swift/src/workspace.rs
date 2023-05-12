@@ -1,17 +1,14 @@
 use super::Block;
 use jwst::Workspace as JwstWorkspace;
-use yrs::UpdateSubscription;
 
 pub struct Workspace {
     pub(crate) workspace: JwstWorkspace,
-    pub(crate) _sub: Option<UpdateSubscription>,
 }
 
 impl Workspace {
     pub fn new(id: String) -> Self {
         Self {
             workspace: JwstWorkspace::new(id),
-            _sub: None,
         }
     }
 
@@ -35,12 +32,14 @@ impl Workspace {
         })
     }
 
-    pub fn create(&self, block_id: String, flavor: String) -> Block {
+    pub fn create(&self, block_id: String, flavour: String) -> Block {
         let workspace = self.workspace.clone();
         self.workspace.with_trx(|mut trx| {
             let block = Block::new(
                 workspace,
-                trx.get_blocks().create(&mut trx.trx, block_id, flavor),
+                trx.get_blocks()
+                    .create(&mut trx.trx, block_id, flavour)
+                    .expect("failed to create block"),
             );
             drop(trx);
             block
@@ -67,6 +66,8 @@ impl Workspace {
     }
 
     pub fn set_search_index(self: &Workspace, fields: Vec<String>) -> bool {
-        self.workspace.set_search_index(fields)
+        self.workspace
+            .set_search_index(fields)
+            .expect("failed to set search index")
     }
 }

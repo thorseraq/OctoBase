@@ -1,9 +1,9 @@
+use crate::infrastructure::auth::get_claim_from_token;
+
 use super::*;
 use axum::{
-    extract::{
-        ws::{close_code, CloseFrame, Message, WebSocketUpgrade},
-        Path,
-    },
+    extract::{ws::WebSocketUpgrade, Path},
+    http::StatusCode,
     response::Response,
 };
 use jwst_rpc::{handle_connector, socket_connector};
@@ -24,58 +24,35 @@ struct Param {
     token: String,
 }
 
+#[instrument(skip(ctx, token, ws))]
 async fn ws_handler(
     Extension(ctx): Extension<Arc<Context>>,
     Path(workspace): Path<String>,
     Query(Param { token }): Query<Param>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let user: Option<RefreshToken> = ctx
-        .key
-        .decrypt_aes_base64(token)
-        .ok()
-        .and_then(|data| serde_json::from_slice(&data).ok());
-
-    let user = if let Some(user) = user {
-        if let Ok(true) = ctx.db.verify_refresh_token(&user).await {
-            Some(user.user_id)
-        } else {
-            None
-        }
-    } else {
-        None
+    let user = match get_claim_from_token(&token, &ctx.key.jwt_decode) {
+        Some(claims) => Some(claims.user.id),
+        None => None,
     };
 
-    ws.protocols(["AFFiNE"])
-        .on_upgrade(move |mut socket| async move {
-            let user_id = if let Some(user_id) = user {
-                if let Ok(true) = ctx
-                    .db
-                    .can_read_workspace(user_id.clone(), workspace.clone())
-                    .await
-                {
-                    Some(user_id)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let user_id = if let Some(user_id) = user_id {
-                user_id
-            } else {
-                let _ = socket
-                    .send(collaboration::Message::Close(Some(CloseFrame {
-                        code: close_code::POLICY,
-                        reason: "Unauthorized".into(),
-                    })))
-                    .await;
-                return;
-            };
+    let Some(user_id) = user else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
 
-            handle_connector(ctx.clone(), workspace.clone(), user_id, move || {
-                socket_connector(socket, &workspace)
-            })
-            .await
+    if !ctx
+        .db
+        .can_read_workspace(user_id.clone(), workspace.clone())
+        .await
+        .ok()
+        .unwrap_or(false)
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    ws.protocols(["AFFiNE"]).on_upgrade(move |socket| {
+        handle_connector(ctx.clone(), workspace.clone(), user_id, move || {
+            socket_connector(socket, &workspace)
         })
+    })
 }

@@ -1,4 +1,5 @@
 use super::{utils::get_hash, *};
+use crate::types::JwstStorageResult;
 use jwst_storage_migration::{Migrator, MigratorTrait};
 
 pub(super) type BlobModel = <Blobs as EntityTrait>::Model;
@@ -12,14 +13,15 @@ pub struct BlobDBStorage {
 }
 
 impl BlobDBStorage {
-    pub async fn init_with_pool(pool: DatabaseConnection, bucket: Arc<Bucket>) -> JwstResult<Self> {
-        Migrator::up(&pool, None)
-            .await
-            .context("failed to run migration")?;
+    pub async fn init_with_pool(
+        pool: DatabaseConnection,
+        bucket: Arc<Bucket>,
+    ) -> JwstStorageResult<Self> {
+        Migrator::up(&pool, None).await?;
         Ok(Self { bucket, pool })
     }
 
-    pub async fn init_pool(database: &str) -> JwstResult<Self> {
+    pub async fn init_pool(database: &str) -> JwstStorageResult<Self> {
         let is_sqlite = is_sqlite(database);
         let pool = create_connection(database, is_sqlite).await?;
 
@@ -65,6 +67,17 @@ impl BlobDBStorage {
             .and_then(|r| r.ok_or(JwstBlobError::BlobNotFound(hash.into())))
     }
 
+    pub(super) async fn get_blobs_size(&self, workspace: &str) -> Result<Option<i64>, DbErr> {
+        Blobs::find()
+            .filter(BlobColumn::Workspace.eq(workspace))
+            .column_as(BlobColumn::Length, "size")
+            .column_as(BlobColumn::Timestamp, "created_at")
+            .into_model::<InternalBlobMetadata>()
+            .all(&self.pool)
+            .await
+            .map(|r| r.into_iter().map(|f| f.size).reduce(|a, b| a + b))
+    }
+
     async fn insert(&self, table: &str, hash: &str, blob: &[u8]) -> Result<(), DbErr> {
         if !self.exists(table, hash).await? {
             Blobs::insert(BlobActiveModel {
@@ -107,15 +120,15 @@ impl BlobDBStorage {
 }
 
 #[async_trait]
-impl BlobStorage for BlobDBStorage {
-    async fn check_blob(&self, workspace: Option<String>, id: String) -> JwstResult<bool> {
-        let _lock = self.bucket.get_lock().await;
+impl BlobStorage<JwstStorageError> for BlobDBStorage {
+    async fn check_blob(&self, workspace: Option<String>, id: String) -> JwstStorageResult<bool> {
+        let _lock = self.bucket.read().await;
         let workspace = workspace.unwrap_or("__default__".into());
         if let Ok(exists) = self.exists(&workspace, &id).await {
             return Ok(exists);
         }
 
-        Err(JwstError::WorkspaceNotFound(workspace))
+        Err(JwstStorageError::WorkspaceNotFound(workspace))
     }
 
     async fn get_blob(
@@ -123,14 +136,14 @@ impl BlobStorage for BlobDBStorage {
         workspace: Option<String>,
         id: String,
         _params: Option<HashMap<String, String>>,
-    ) -> JwstResult<Vec<u8>> {
-        let _lock = self.bucket.get_lock().await;
+    ) -> JwstStorageResult<Vec<u8>> {
+        let _lock = self.bucket.read().await;
         let workspace = workspace.unwrap_or("__default__".into());
         if let Ok(blob) = self.get(&workspace, &id).await {
             return Ok(blob.blob);
         }
 
-        Err(JwstError::WorkspaceNotFound(workspace))
+        Err(JwstStorageError::WorkspaceNotFound(workspace))
     }
 
     async fn get_metadata(
@@ -138,13 +151,13 @@ impl BlobStorage for BlobDBStorage {
         workspace: Option<String>,
         id: String,
         _params: Option<HashMap<String, String>>,
-    ) -> JwstResult<BlobMetadata> {
-        let _lock = self.bucket.get_lock().await;
+    ) -> JwstStorageResult<BlobMetadata> {
+        let _lock = self.bucket.read().await;
         let workspace = workspace.unwrap_or("__default__".into());
         if let Ok(metadata) = self.metadata(&workspace, &id).await {
             Ok(metadata.into())
         } else {
-            Err(JwstError::WorkspaceNotFound(workspace))
+            Err(JwstStorageError::WorkspaceNotFound(workspace))
         }
     }
 
@@ -152,8 +165,8 @@ impl BlobStorage for BlobDBStorage {
         &self,
         workspace: Option<String>,
         stream: impl Stream<Item = Bytes> + Send,
-    ) -> JwstResult<String> {
-        let _lock = self.bucket.get_lock().await;
+    ) -> JwstStorageResult<String> {
+        let _lock = self.bucket.write().await;
         let workspace = workspace.unwrap_or("__default__".into());
 
         let (hash, blob) = get_hash(stream).await;
@@ -161,27 +174,37 @@ impl BlobStorage for BlobDBStorage {
         if self.insert(&workspace, &hash, &blob).await.is_ok() {
             Ok(hash)
         } else {
-            Err(JwstError::WorkspaceNotFound(workspace))
+            Err(JwstStorageError::WorkspaceNotFound(workspace))
         }
     }
 
-    async fn delete_blob(&self, workspace_id: Option<String>, id: String) -> JwstResult<bool> {
-        let _lock = self.bucket.get_lock().await;
+    async fn delete_blob(
+        &self,
+        workspace_id: Option<String>,
+        id: String,
+    ) -> JwstStorageResult<bool> {
+        let _lock = self.bucket.write().await;
         let workspace_id = workspace_id.unwrap_or("__default__".into());
         if let Ok(success) = self.delete(&workspace_id, &id).await {
             Ok(success)
         } else {
-            Err(JwstError::WorkspaceNotFound(workspace_id))
+            Err(JwstStorageError::WorkspaceNotFound(workspace_id))
         }
     }
 
-    async fn delete_workspace(&self, workspace_id: String) -> JwstResult<()> {
-        let _lock = self.bucket.get_lock().await;
+    async fn delete_workspace(&self, workspace_id: String) -> JwstStorageResult<()> {
+        let _lock = self.bucket.write().await;
         if self.drop(&workspace_id).await.is_ok() {
             Ok(())
         } else {
-            Err(JwstError::WorkspaceNotFound(workspace_id))
+            Err(JwstStorageError::WorkspaceNotFound(workspace_id))
         }
+    }
+
+    async fn get_blobs_size(&self, workspace_id: String) -> JwstStorageResult<i64> {
+        let _lock = self.bucket.read().await;
+        let size = self.get_blobs_size(&workspace_id).await?;
+        return Ok(size.unwrap_or(0));
     }
 }
 
@@ -208,6 +231,7 @@ pub async fn blobs_storage_test(pool: &BlobDBStorage) -> anyhow::Result<()> {
     assert_eq!(pool.count("basic").await?, 1);
 
     pool.drop("basic").await?;
+    assert_eq!(pool.count("basic").await?, 0);
 
     pool.insert("basic", "test1", &[1, 2, 3, 4]).await?;
 

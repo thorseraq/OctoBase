@@ -1,7 +1,9 @@
+mod convert;
 mod transaction;
 
-use super::{block::MarkdownState, *};
+use super::{block::MarkdownState, workspace::Pages, *};
 use serde::{ser::SerializeMap, Serialize, Serializer};
+use std::sync::Arc;
 use transaction::SpaceTransaction;
 use yrs::{Doc, Map, MapRef, ReadTxn, Transact, TransactionMut, WriteTxn};
 
@@ -17,10 +19,19 @@ pub struct Space {
     pub(super) blocks: MapRef,
     pub(super) updated: MapRef,
     pub(super) metadata: MapRef,
+    pages: Pages,
+    block_observer_config: Option<Arc<BlockObserverConfig>>,
 }
 
 impl Space {
-    pub fn new<I, S>(trx: &mut TransactionMut, doc: Doc, workspace_id: I, space_id: S) -> Self
+    pub fn new<I, S>(
+        trx: &mut TransactionMut,
+        doc: Doc,
+        pages: Pages,
+        workspace_id: I,
+        space_id: S,
+        block_observer_config: Option<Arc<BlockObserverConfig>>,
+    ) -> Self
     where
         I: AsRef<str>,
         S: AsRef<str>,
@@ -38,30 +49,37 @@ impl Space {
             blocks,
             updated,
             metadata,
+            pages,
+            block_observer_config,
         }
     }
 
-    pub fn from_exists<I, S>(trx: &TransactionMut, doc: Doc, workspace_id: I, space_id: S) -> Option<Self>
+    pub fn from_exists<I, S>(
+        trx: &TransactionMut,
+        doc: Doc,
+        workspace_id: I,
+        space_id: S,
+        block_observer_config: Option<Arc<BlockObserverConfig>>,
+    ) -> Option<Self>
     where
         I: AsRef<str>,
         S: AsRef<str>,
     {
         let space_id = space_id.as_ref().into();
-        let blocks = trx.get_map(&format!("space:{}", space_id));
-        let updated = trx.get_map(constants::space::UPDATED);
-        let metadata = trx.get_map(constants::space::META);
+        let blocks = trx.get_map(&format!("space:{}", space_id))?;
+        let updated = trx.get_map(constants::space::UPDATED)?;
+        let metadata = trx.get_map(constants::space::META)?;
+        let pages = Pages::new(metadata.get(trx, "pages").and_then(|v| v.to_yarray())?);
 
-        blocks.and_then(|blocks| {
-            updated.and_then(|updated| {
-                metadata.map(|metadata| Self {
-                    workspace_id: workspace_id.as_ref().into(),
-                    space_id,
-                    doc,
-                    blocks,
-                    updated,
-                    metadata,
-                })
-            })
+        Some(Self {
+            workspace_id: workspace_id.as_ref().into(),
+            space_id,
+            doc,
+            blocks,
+            updated,
+            metadata,
+            pages,
+            block_observer_config,
         })
     }
 
@@ -110,7 +128,11 @@ impl Space {
         T: ReadTxn,
         S: AsRef<str>,
     {
-        Block::from(trx, self, block_id, self.client_id())
+        let mut block = Block::from(trx, self, block_id, self.client_id())?;
+        if let Some(block_observer_config) = self.block_observer_config.clone() {
+            block.subscribe(block_observer_config);
+        }
+        Some(block)
     }
 
     pub fn block_count(&self) -> u32 {
@@ -142,7 +164,12 @@ impl Space {
         cb(Box::new(iterator))
     }
 
-    pub fn create<B, F>(&self, trx: &mut TransactionMut, block_id: B, flavor: F) -> Block
+    pub fn create<B, F>(
+        &self,
+        trx: &mut TransactionMut,
+        block_id: B,
+        flavour: F,
+    ) -> JwstResult<Block>
     where
         B: AsRef<str>,
         F: AsRef<str>,
@@ -150,9 +177,13 @@ impl Space {
         info!(
             "create block: {}, flavour: {}",
             block_id.as_ref(),
-            flavor.as_ref()
+            flavour.as_ref()
         );
-        Block::new(trx, self, block_id, flavor, self.client_id())
+        let mut block = Block::new(trx, self, block_id, flavour, self.client_id())?;
+        if let Some(block_observer_config) = self.block_observer_config.clone() {
+            block.subscribe(block_observer_config);
+        }
+        Ok(block)
     }
 
     pub fn remove<S: AsRef<str>>(&self, trx: &mut TransactionMut, block_id: S) -> bool {
@@ -167,7 +198,13 @@ impl Space {
     {
         self.blocks(trx, |blocks| {
             blocks
-                .filter(|block| block.flavor(trx) == flavour)
+                .filter(|block| block.flavour(trx) == flavour)
+                .map(|mut block| {
+                    if let Some(block_observer_config) = self.block_observer_config.clone() {
+                        block.subscribe(block_observer_config);
+                    }
+                    block
+                })
                 .collect::<Vec<_>>()
         })
     }
@@ -180,37 +217,11 @@ impl Space {
         self.blocks.contains_key(trx, block_id.as_ref())
     }
 
-    pub fn to_markdown<T>(&self, trx: &T) -> Option<String>
+    pub fn shared<T>(&self, trx: &T) -> bool
     where
         T: ReadTxn,
     {
-        if let Some(title) = self.get_blocks_by_flavour(trx, "affine:page").first() {
-            let mut markdown = String::new();
-
-            if let Some(title) = title.get(trx, "title") {
-                markdown.push_str(&format!("# {title}"));
-                markdown.push('\n');
-            }
-
-            for frame in title.children(trx) {
-                if let Some(frame) = self.get(trx, &frame) {
-                    let mut state = MarkdownState::default();
-                    for child in frame.children(trx) {
-                        if let Some(text) = self
-                            .get(trx, &child)
-                            .and_then(|child| child.to_markdown(trx, &mut state))
-                        {
-                            markdown.push_str(&text);
-                            markdown.push('\n');
-                        }
-                    }
-                }
-            }
-
-            Some(markdown)
-        } else {
-            None
-        }
+        self.pages.check_shared(trx, &self.space_id)
     }
 }
 
@@ -238,7 +249,7 @@ impl Serialize for Space {
 mod test {
     use super::*;
     use tracing::info;
-    use yrs::{types::ToJson, updates::decoder::Decode, Doc, StateVector, Update};
+    use yrs::{types::ToJson, updates::decoder::Decode, ArrayPrelim, Doc, StateVector, Update};
 
     #[test]
     fn doc_load_test() {
@@ -249,12 +260,23 @@ mod test {
 
         let space = {
             let mut trx = doc.transact_mut();
-            Space::new(&mut trx, doc.clone(), "workspace", space_id)
+            let metadata = doc.get_or_insert_map_with_trx(trx.store_mut(), constants::space::META);
+            let pages = metadata
+                .insert(&mut trx, "pages", ArrayPrelim::default())
+                .unwrap();
+            Space::new(
+                &mut trx,
+                doc.clone(),
+                Pages::new(pages),
+                "workspace",
+                space_id,
+                None,
+            )
         };
         space.with_trx(|mut t| {
-            let block = t.create("test", "text");
+            let block = t.create("test", "text").unwrap();
 
-            block.set(&mut t.trx, "test", "test");
+            block.set(&mut t.trx, "test", "test").unwrap();
         });
 
         let doc = space.doc();
@@ -262,11 +284,12 @@ mod test {
         let new_doc = {
             let update = doc
                 .transact()
-                .encode_state_as_update_v1(&StateVector::default());
+                .encode_state_as_update_v1(&StateVector::default())
+                .and_then(|update| Update::decode_v1(&update));
             let doc = Doc::default();
             {
                 let mut trx = doc.transact_mut();
-                match Update::decode_v1(&update) {
+                match update {
                     Ok(update) => trx.apply_update(update),
                     Err(err) => info!("failed to decode update: {:?}", err),
                 }
@@ -297,7 +320,18 @@ mod test {
         let doc = Doc::new();
         let space = {
             let mut trx = doc.transact_mut();
-            Space::new(&mut trx, doc.clone(), "workspace", "space")
+            let metadata = doc.get_or_insert_map_with_trx(trx.store_mut(), constants::space::META);
+            let pages = metadata
+                .insert(&mut trx, "pages", ArrayPrelim::default())
+                .unwrap();
+            Space::new(
+                &mut trx,
+                doc.clone(),
+                Pages::new(pages),
+                "workspace",
+                "space",
+                None,
+            )
         };
 
         space.with_trx(|t| {
@@ -308,12 +342,12 @@ mod test {
         });
 
         space.with_trx(|mut t| {
-            let block = t.create("block", "text");
+            let block = t.create("block", "text").unwrap();
 
             assert_eq!(space.blocks.len(&t.trx), 1);
             assert_eq!(space.updated.len(&t.trx), 1);
             assert_eq!(block.block_id(), "block");
-            assert_eq!(block.flavor(&t.trx), "text");
+            assert_eq!(block.flavour(&t.trx), "text");
 
             assert_eq!(
                 space.get(&t.trx, "block").map(|b| b.block_id()),
@@ -331,14 +365,25 @@ mod test {
         });
 
         space.with_trx(|mut t| {
-            Block::new(&mut t.trx, &space, "test", "test", 1);
+            Block::new(&mut t.trx, &space, "test", "test", 1).unwrap();
             let vec = space.get_blocks_by_flavour(&t.trx, "test");
             assert_eq!(vec.len(), 1);
         });
 
         let doc = Doc::with_client_id(123);
         let mut trx = doc.transact_mut();
-        let space = Space::new(&mut trx, doc.clone(), "space", "test");
+        let metadata = doc.get_or_insert_map_with_trx(trx.store_mut(), constants::space::META);
+        let pages = metadata
+            .insert(&mut trx, "pages", ArrayPrelim::default())
+            .unwrap();
+        let space = Space::new(
+            &mut trx,
+            doc.clone(),
+            Pages::new(pages),
+            "space",
+            "test",
+            None,
+        );
         assert_eq!(space.client_id(), 123);
     }
 }

@@ -1,6 +1,8 @@
 mod api;
+mod application;
+mod config;
 mod context;
-mod error_status;
+mod infrastructure;
 mod layer;
 mod utils;
 
@@ -12,10 +14,14 @@ use tower_http::cors::{Any, CorsLayer};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+
 #[tokio::main]
 async fn main() {
-    init_logger();
-    jwst::print_versions(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    // ignore load error when missing env file
+    let _ = dotenvy::dotenv();
+    init_logger(PKG_NAME);
+    jwst::print_versions(PKG_NAME, env!("CARGO_PKG_VERSION"));
 
     let cors = CorsLayer::new()
         // allow `GET` and `POST` when accessing the resource

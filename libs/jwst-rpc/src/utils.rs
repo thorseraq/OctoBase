@@ -1,12 +1,13 @@
 use super::*;
-use jwst::Workspace;
+use jwst::{DocStorage, Workspace};
 use jwst_storage::JwstStorage;
 use nanoid::nanoid;
-use std::collections::HashMap;
-use std::thread::JoinHandle as StdJoinHandler;
-use tokio::sync::mpsc::channel;
-use tokio::sync::RwLock;
-use tokio::task::JoinHandle as TokioJoinHandler;
+use std::{collections::HashMap, thread::JoinHandle as StdJoinHandler, time::Duration};
+use tokio::{
+    sync::{mpsc::channel, RwLock},
+    task::JoinHandle as TokioJoinHandler,
+    time::sleep,
+};
 use yrs::{updates::decoder::Decode, Doc, ReadTxn, StateVector, Transact, Update};
 
 pub struct MinimumServerContext {
@@ -14,14 +15,30 @@ pub struct MinimumServerContext {
     storage: JwstStorage,
 }
 
+// just for test
 impl MinimumServerContext {
     pub async fn new() -> Arc<Self> {
-        let storage = JwstStorage::new(
-            &std::env::var("DATABASE_URL")
-                .map(|url| format!("{url}_binary"))
-                .unwrap_or("sqlite::memory:".into()),
-        )
-        .await
+        let storage = 'connect: loop {
+            let mut retry = 3;
+            match JwstStorage::new(
+                &std::env::var("DATABASE_URL")
+                    .map(|url| format!("{url}_binary"))
+                    .unwrap_or("sqlite::memory:".into()),
+            )
+            .await
+            {
+                Ok(storage) => break 'connect Ok(storage),
+                Err(e) => {
+                    retry -= 1;
+                    if retry > 0 {
+                        error!("failed to connect database: {}", e);
+                        sleep(Duration::from_secs(1)).await;
+                    } else {
+                        break 'connect Err(e);
+                    }
+                }
+            }
+        }
         .unwrap();
 
         Arc::new(Self {
@@ -34,12 +51,19 @@ impl MinimumServerContext {
         workspace_id: &str,
     ) -> (Arc<MinimumServerContext>, Workspace, Vec<u8>) {
         let server = Self::new().await;
+        server
+            .get_storage()
+            .docs()
+            .delete(workspace_id.into())
+            .await
+            .unwrap();
         let ws = server.get_workspace(workspace_id).await.unwrap();
 
         let init_state = ws
             .doc()
             .transact()
-            .encode_state_as_update_v1(&StateVector::default());
+            .encode_state_as_update_v1(&StateVector::default())
+            .expect("encode_state_as_update_v1 failed");
 
         (server, ws, init_state)
     }

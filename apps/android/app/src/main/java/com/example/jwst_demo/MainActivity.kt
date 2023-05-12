@@ -20,8 +20,9 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         val database = File(filesDir, "jwst.db")
-        val storage = Storage(database.absolutePath, "ws://10.0.2.2:3001/collaboration")
+        val storage = Storage(database.absolutePath, "ws://10.0.2.2:3001/collaboration", "trace")
         storage.getWorkspace("test").unwrap()?.let { workspace ->
+            workspace.setCallback { block_ids -> println(block_ids) }
             workspace.withTrx { trx -> workspace.get(trx, "a").unwrap() }?.let { block ->
                 // load the existing block on the second startup program.
                 val content = workspace.withTrx { trx -> block.get(trx, "a key") }?.get()
@@ -73,6 +74,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            println("getSyncState" + storage.getSyncState())
+            println("isOffline " + storage.isOffline())
+            println("isInitialized " + storage.isInitialized())
+            println("isSyncing " + storage.isSyncing())
+            println("isFinished " + storage.isFinished())
+            println("isError " + storage.isError())
+
+
             workspace.withTrx { trx ->
                 trx.create("test", "list")
                 trx.create("test2", "list")
@@ -84,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             // search demo
             Log.i("jwst", "search demo")
             workspace.withTrx { trx ->
-                val block = trx.create("search_test", "search_test_flavor")
+                val block = trx.create("search_test", "search_test_flavour")
                 block.set(trx, "title", "introduction")
                 block.set(trx, "text", "hello every one")
                 block.set(trx, "index", "this is index")

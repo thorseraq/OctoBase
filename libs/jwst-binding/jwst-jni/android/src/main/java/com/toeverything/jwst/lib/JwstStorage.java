@@ -10,6 +10,11 @@ public final class JwstStorage {
     }
     private static native long init(@NonNull String path);
 
+    public JwstStorage(@NonNull String path, @NonNull String level) {
+        mNativeObj = init(path, level);
+    }
+    private static native long init(@NonNull String path, @NonNull String level);
+
     public final @NonNull java.util.Optional<String> error() {
         String ret = do_error(mNativeObj);
         java.util.Optional<String> convRet = java.util.Optional.ofNullable(ret);
@@ -17,6 +22,48 @@ public final class JwstStorage {
         return convRet;
     }
     private static native @Nullable String do_error(long self);
+
+    public final boolean is_offline() {
+        boolean ret = do_is_offline(mNativeObj);
+
+        return ret;
+    }
+    private static native boolean do_is_offline(long self);
+
+    public final boolean is_initialized() {
+        boolean ret = do_is_initialized(mNativeObj);
+
+        return ret;
+    }
+    private static native boolean do_is_initialized(long self);
+
+    public final boolean is_syncing() {
+        boolean ret = do_is_syncing(mNativeObj);
+
+        return ret;
+    }
+    private static native boolean do_is_syncing(long self);
+
+    public final boolean is_finished() {
+        boolean ret = do_is_finished(mNativeObj);
+
+        return ret;
+    }
+    private static native boolean do_is_finished(long self);
+
+    public final boolean is_error() {
+        boolean ret = do_is_error(mNativeObj);
+
+        return ret;
+    }
+    private static native boolean do_is_error(long self);
+
+    public final @NonNull String get_sync_state() {
+        String ret = do_get_sync_state(mNativeObj);
+
+        return ret;
+    }
+    private static native @NonNull String do_get_sync_state(long self);
 
     public final @NonNull java.util.Optional<Workspace> connect(@NonNull String workspace_id, @NonNull String remote) {
         long ret = do_connect(mNativeObj, workspace_id, remote);
