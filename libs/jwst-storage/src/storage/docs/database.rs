@@ -3,6 +3,7 @@ use crate::types::JwstStorageResult;
 use jwst::{sync_encode_update, DocStorage, Workspace};
 use jwst_storage_migration::{Migrator, MigratorTrait};
 use std::collections::hash_map::Entry;
+use std::time::{SystemTime, UNIX_EPOCH};
 use yrs::{Doc, ReadTxn, StateVector, Transact};
 
 const MAX_TRIM_UPDATE_LIMIT: u64 = 500;
@@ -126,8 +127,10 @@ impl DocDBStorage {
         C: ConnectionTrait,
     {
         trace!("start update: {workspace}");
+        let time1 = SystemTime::now();
         let update_size = Self::count(conn, workspace).await?;
         if update_size > MAX_TRIM_UPDATE_LIMIT - 1 {
+            println!("full migrate update: {workspace}, {update_size}");
             trace!("full migrate update: {workspace}, {update_size}");
             let doc_records = Self::all(conn, workspace).await?;
 
@@ -140,6 +143,8 @@ impl DocDBStorage {
             trace!("insert update: {workspace}, {update_size}");
             Self::insert(conn, workspace, &blob).await?;
         }
+        let time2 = SystemTime::now();
+        println!("update stage1 cost: {}", time2.duration_since(time1).unwrap().as_millis());
         trace!("end update: {workspace}");
 
         trace!("update {}bytes to {}", blob.len(), workspace);
@@ -151,6 +156,8 @@ impl DocDBStorage {
             }
         }
         trace!("end update broadcast: {workspace}");
+        let time3 = SystemTime::now();
+        println!("update stage2 cost: {}", time3.duration_since(time1).unwrap().as_millis());
 
         Ok(())
     }
@@ -248,10 +255,17 @@ impl DocStorage<JwstStorageError> for DocDBStorage {
 
     async fn write_update(&self, workspace_id: String, data: &[u8]) -> JwstStorageResult<()> {
         debug!("write_update: get lock");
+        let time1 = SystemTime::now();
         let _lock = self.bucket.write().await;
+        let time2 = SystemTime::now();
+        println!("get bucket cost: {}", time2.duration_since(time1).unwrap().as_millis());
 
         trace!("write_update: {:?}", data);
         self.update(&self.pool, &workspace_id, data.into()).await?;
+        let now = SystemTime::now();
+        let since_the_epoch = now.duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        println!("write update ok at: {}", since_the_epoch.as_secs());
 
         Ok(())
     }

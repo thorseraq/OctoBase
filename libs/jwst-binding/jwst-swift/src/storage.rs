@@ -4,6 +4,7 @@ use jwst_logger::init_logger_with;
 use jwst_rpc::{get_workspace, start_sync_thread, SyncState};
 use jwst_storage::JwstStorage as AutoStorage;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{runtime::Runtime, sync::RwLock};
 
 #[derive(Clone)]
@@ -161,7 +162,15 @@ impl Storage {
                     if let Some(storage) = storage.clone() {
                         info!("update: {:?}", &e.update);
                         let update = e.update.clone();
+                        let now = SystemTime::now();
+                        let since_the_epoch = now.duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards");
+                        println!("spawn task at: {}", since_the_epoch.as_secs());
                         rt.spawn(async move {
+                            let now = SystemTime::now();
+                            let since_the_epoch = now.duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards");
+                            println!("write update at: {}", since_the_epoch.as_secs());
                             let storage = storage.write().await;
                             storage
                                 .docs()
@@ -185,8 +194,33 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
+    use std::thread::sleep;
     use crate::{Storage, Workspace};
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn write_blocks() {
+        let (workspace_id, block_id) = ("112123", "1");
+        let workspace = get_workspace(workspace_id, Some(()));
+        for i in 0..10000 {
+            let block = workspace.create(i.to_string(), "list".to_string());
+            block.set_float("key".to_string(), 1.0);
+        }
+
+        sleep(std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn read_blocks() {
+        let (workspace_id, block_id) = ("112123", "1");
+        let workspace = get_workspace(workspace_id, Some(()));
+        for i in 0..100 {
+            let block = workspace.get(i.to_string());
+            if block.is_none() {
+                println!("block {} not found", i);
+            }
+        }
+    }
 
     #[test]
     #[ignore = "need manually start collaboration server"]

@@ -75,7 +75,7 @@ pub fn get_bucket(single_thread: bool) -> Arc<Bucket> {
     // sqlite only support 1 writer at a time
     // we use semaphore to limit the number of concurrent writers
     Arc::new(Bucket::new(
-        if single_thread { 10 } else { 25 },
-        if single_thread { 1 } else { 5 },
+        if single_thread { 10000 } else { 25000 },
+        if single_thread { 1000 } else { 5000 },
     ))
 }
