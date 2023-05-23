@@ -1,6 +1,6 @@
 use std::{mem, ops::Range};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum OrderRange {
     Range(Range<u64>),
     Fragment(Vec<Range<u64>>),
@@ -213,6 +213,17 @@ mod tests {
     }
 
     #[test]
+    fn test_range_pop() {
+        let mut range: OrderRange = vec![(0..10), (20..30)].into();
+        assert_eq!(range.pop(), Some(0..10));
+
+        let mut range: OrderRange = (0..10).into();
+        assert_eq!(range.pop(), Some(0..10));
+        assert!(range.is_empty());
+        assert_eq!(range.pop(), None);
+    }
+
+    #[test]
     fn test_ranges_squash() {
         let mut range = OrderRange::Fragment(vec![(0..10), (20..30)]);
 
@@ -229,5 +240,12 @@ mod tests {
         range = OrderRange::Fragment(vec![(0..10), (10..20), (20..30)]);
         range.squash();
         assert_eq!(range, OrderRange::Range(0..30));
+    }
+
+    #[test]
+    fn test_range_sort() {
+        let mut range: OrderRange = vec![(20..30), (0..10), (10..50)].into();
+        range.sort();
+        assert_eq!(range, vec![(0..10), (10..50), (20..30)].into());
     }
 }
