@@ -4,6 +4,8 @@ use yrs::{
     Array, ArrayPrelim, ArrayRef, Doc, Map, MapPrelim, MapRef, Text, TextPrelim, TextRef, Transact,
 };
 
+// use super::types::ArrayOpType;
+
 pub fn yrs_create_nest_type_from_root(
     doc: &yrs::Doc,
     target_type: CRDTNestType,
@@ -199,16 +201,16 @@ pub fn pick_num(len: u32, insert_pos: &InsertPos) -> u32 {
 }
 
 pub struct YrsMapOps {
-    ops: HashMap<MapOpType, Box<dyn Fn(&yrs::Doc, &MapRef, CRDTParam)>>,
+    ops: HashMap<NestDataOpType, Box<dyn Fn(&yrs::Doc, &MapRef, CRDTParam)>>,
 }
 
 impl YrsMapOps {
     pub fn operate_map_ref(&self, doc: &yrs::Doc, map_ref: &mut MapRef, crdt_param: CRDTParam) {
-        self.ops.get(&crdt_param.map_op_type).unwrap()(doc, map_ref, crdt_param);
+        self.ops.get(&crdt_param.nest_data_op_type).unwrap()(doc, map_ref, crdt_param);
     }
 
     pub fn new() -> Self {
-        let mut ops: HashMap<MapOpType, Box<dyn Fn(&yrs::Doc, &MapRef, CRDTParam)>> =
+        let mut ops: HashMap<NestDataOpType, Box<dyn Fn(&yrs::Doc, &MapRef, CRDTParam)>> =
             HashMap::new();
 
         let insert_op = |doc: &yrs::Doc, map: &MapRef, params: CRDTParam| {
@@ -244,9 +246,59 @@ impl YrsMapOps {
             map.clear(&mut trx);
         };
 
-        ops.insert(MapOpType::Insert, Box::new(insert_op));
-        ops.insert(MapOpType::Remove, Box::new(remove_op));
-        ops.insert(MapOpType::Clear, Box::new(clear_op));
+        ops.insert(NestDataOpType::Insert, Box::new(insert_op));
+        ops.insert(NestDataOpType::Delete, Box::new(remove_op));
+        ops.insert(NestDataOpType::Clear, Box::new(clear_op));
+
+        Self { ops }
+    }
+}
+
+pub struct YrsArrayOps {
+    ops: HashMap<NestDataOpType, Box<dyn Fn(&yrs::Doc, &ArrayRef, CRDTParam)>>,
+}
+
+impl YrsArrayOps {
+    pub fn operate_array_ref(
+        &self,
+        doc: &yrs::Doc,
+        array_ref: &mut ArrayRef,
+        crdt_param: CRDTParam,
+    ) {
+        self.ops.get(&crdt_param.nest_data_op_type).unwrap()(doc, array_ref, crdt_param);
+    }
+
+    pub fn new() -> Self {
+        let mut ops: HashMap<NestDataOpType, Box<dyn Fn(&yrs::Doc, &ArrayRef, CRDTParam)>> =
+            HashMap::new();
+
+        let insert_op = |doc: &yrs::Doc, array: &ArrayRef, params: CRDTParam| {
+            let mut trx = doc.transact_mut();
+            let len = array.len(&trx);
+            let index = pick_num(len, &params.insert_pos);
+            array.insert(&mut trx, index, params.value).unwrap();
+        };
+
+        let delete_op = |doc: &yrs::Doc, array: &ArrayRef, params: CRDTParam| {
+            let mut trx = doc.transact_mut();
+            let len = array.len(&trx);
+            if len >= 1 {
+                let index = pick_num(len - 1, &params.insert_pos);
+                array.remove(&mut trx, index).unwrap();
+            }
+        };
+
+        let clear_op = |doc: &yrs::Doc, array: &ArrayRef, _params: CRDTParam| {
+            let mut trx = doc.transact_mut();
+            let len = array.len(&trx);
+            for _ in 0..len {
+                array.remove(&mut trx, 0).unwrap();
+            }
+        };
+
+        ops.insert(NestDataOpType::Insert, Box::new(insert_op));
+        ops.insert(NestDataOpType::Delete, Box::new(delete_op));
+        ops.insert(NestDataOpType::Clear, Box::new(clear_op));
 
         Self { ops }
     }

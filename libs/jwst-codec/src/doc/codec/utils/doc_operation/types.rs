@@ -1,19 +1,22 @@
 use yrs::{ArrayRef, MapRef, TextRef, XmlElementRef, XmlFragmentRef, XmlTextRef};
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug, arbitrary::Arbitrary)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+#[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
 pub enum OpType {
     HandleCurrent,
     CreateCRDTNestType,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug, arbitrary::Arbitrary)]
-pub enum MapOpType {
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+#[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
+pub enum NestDataOpType {
     Insert,
-    Remove,
+    Delete,
     Clear,
 }
 
-#[derive(PartialEq, Clone, Debug, arbitrary::Arbitrary)]
+#[derive(PartialEq, Clone, Debug)]
+#[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
 pub struct CRDTParam {
     pub op_type: OpType,
     pub new_nest_type: CRDTNestType,
@@ -21,10 +24,11 @@ pub struct CRDTParam {
     pub insert_pos: InsertPos,
     pub key: String,
     pub value: String,
-    pub map_op_type: MapOpType,
+    pub nest_data_op_type: NestDataOpType,
 }
 
-#[derive(Debug, Clone, PartialEq, arbitrary::Arbitrary)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
 pub enum CRDTNestType {
     Array,
     Map,
@@ -34,14 +38,16 @@ pub enum CRDTNestType {
     XMLText,
 }
 
-#[derive(Debug, Clone, PartialEq, arbitrary::Arbitrary)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
 pub enum ManipulateSource {
     NewNestTypeFromYDocRoot,
     CurrentNestType,
     NewNestTypeFromCurrent,
 }
 
-#[derive(Debug, Clone, PartialEq, arbitrary::Arbitrary)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
 pub enum InsertPos {
     BEGIN,
     MID,

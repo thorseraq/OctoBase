@@ -1,25 +1,29 @@
 #![no_main]
 
-#[cfg(fuzzing)]
+// #[cfg(fuzzing)]
 use jwst_codec::{
     gen_nest_type_from_nest_type, gen_nest_type_from_root, CRDTParam, ManipulateSource, OpType,
-    YrsMapOps, YrsNestType,
+    YrsMapOps, YrsArrayOps, YrsNestType
 };
-#[cfg(fuzzing)]
+// #[cfg(fuzzing)]
 use libfuzzer_sys::fuzz_target;
-#[cfg(fuzzing)]
+// #[cfg(fuzzing)]
 use yrs::Transact;
 
-#[cfg(fuzzing)]
+// #[cfg(fuzzing)]
 fuzz_target!(|crdt_params: Vec<CRDTParam>| {
     let mut doc = yrs::Doc::new();
     let mut cur_crdt_nest_type: Option<YrsNestType> = None;
     let map_ops = YrsMapOps::new();
+    let array_ops = YrsArrayOps::new();
     for crdt_param in crdt_params {
         match crdt_param.op_type {
             OpType::HandleCurrent => match cur_crdt_nest_type.clone() {
                 Some(YrsNestType::MapType(mut map_ref)) => {
                     map_ops.operate_map_ref(&doc, &mut map_ref, crdt_param.clone());
+                }
+                Some(YrsNestType::ArrayType(mut array_ref)) => {
+                    array_ops.operate_array_ref(&doc, &mut array_ref, crdt_param.clone());
                 }
                 Some(..) => {}
                 None => {}

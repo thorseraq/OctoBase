@@ -7,8 +7,8 @@ pub use items::*;
 #[cfg(test)]
 use super::*;
 
-#[cfg(fuzzing)]
+// #[cfg(fuzzing)]
 mod doc_operation;
 
-#[cfg(fuzzing)]
+// #[cfg(fuzzing)]
 pub use doc_operation::*;
