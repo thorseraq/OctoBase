@@ -15,6 +15,8 @@ impl Iterator for ListIterator {
                 continue;
             }
 
+
+
             return Some(item);
         }
 
