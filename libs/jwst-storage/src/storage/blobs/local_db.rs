@@ -80,7 +80,7 @@ impl BlobDBStorage {
     }
 
     async fn insert(&self, table: &str, hash: &str, blob: &[u8]) -> Result<(), DbErr> {
-        if !self.exists(table, hash).await? {
+        if !self.exists::<Blobs>(table, hash).await? {
             Blobs::insert(BlobActiveModel {
                 workspace: Set(table.into()),
                 hash: Set(hash.into()),
@@ -118,7 +118,7 @@ impl BlobStorage<JwstStorageError> for BlobDBStorage {
     async fn check_blob(&self, workspace: Option<String>, id: String) -> JwstStorageResult<bool> {
         let _lock = self.bucket.read().await;
         let workspace = workspace.unwrap_or("__default__".into());
-        if let Ok(exists) = self.exists(&workspace, &id).await {
+        if let Ok(exists) = self.exists::<Blobs>(&workspace, &id).await {
             return Ok(exists);
         }
 
@@ -179,7 +179,7 @@ impl BlobStorage<JwstStorageError> for BlobDBStorage {
     ) -> JwstStorageResult<bool> {
         let _lock = self.bucket.write().await;
         let workspace_id = workspace_id.unwrap_or("__default__".into());
-        if let Ok(success) = self.delete(&workspace_id, &id).await {
+        if let Ok(success) = self.delete::<Blobs>(&workspace_id, &id).await {
             Ok(success)
         } else {
             Err(JwstStorageError::WorkspaceNotFound(workspace_id))

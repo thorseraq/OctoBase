@@ -8,6 +8,7 @@ pub use local_db::blobs_storage_test;
 use super::{entities::prelude::*, *};
 use bytes::Bytes;
 use image::ImageError;
+use sea_orm::IntoActiveModel;
 use jwst::{BlobMetadata, BlobStorage};
 use local_db::BlobDBStorage;
 use thiserror::Error;
@@ -283,17 +284,17 @@ impl BlobStorage<JwstStorageError> for BlobAutoStorage {
 
 #[async_trait]
 pub trait SharedDBOps: AsRef<DatabaseConnection> {
-    async fn exists(&self, workspace: &str, hash: &str) -> Result<bool, DbErr> {
+    async fn exists<E: EntityTrait>(&self, workspace: &str, hash: &str) -> Result<bool, DbErr> {
         let pool = self.as_ref();
-        Blobs::find_by_id((workspace.into(), hash.into()))
+        E::find_by_id((workspace.into(), hash.into()))
             .count(pool)
             .await
             .map(|c| c > 0)
     }
 
-    async fn delete(&self, workspace: &str, hash: &str) -> Result<bool, DbErr> {
+    async fn delete<E: EntityTrait>(&self, workspace: &str, hash: &str) -> Result<bool, DbErr> {
         let pool = self.as_ref();
-        Blobs::delete_by_id((workspace.into(), hash.into()))
+        E::delete_by_id((workspace.into(), hash.into()))
             .exec(pool)
             .await
             .map(|r| r.rows_affected == 1)
