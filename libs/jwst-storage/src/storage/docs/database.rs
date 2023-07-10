@@ -369,26 +369,6 @@ impl DocStorage<JwstStorageError> for DocDBStorage {
         Ok(Some(doc))
     }
 
-    async fn get_doc_updates(&self, guid: String) -> JwstStorageResult<Option<Vec<Vec<u8>>>> {
-        // let mut result: Vec<Vec<u8>> = Vec::new();
-        // let records: Vec<<Docs as EntityTrait>::Model> = Docs::find()
-        //     .filter(DocsColumn::Guid.eq(guid))
-        //     .all(&self.pool)
-        //     .await?;
-        //
-        // if records.is_empty() {
-        //     return Ok(None);
-        // }
-        //
-        // for record in records {
-        //     result.push(record.blob);
-        // }
-        //
-        // Ok(Some(result))
-
-        Ok(None)
-    }
-
     async fn update_doc(
         &self,
         workspace_id: String,
